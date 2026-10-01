@@ -120,19 +120,22 @@ func (n *Nowcast) Velocity(lat, lon float64) (speedKmh, towardDeg float64, ok bo
 	return speedKmh, towardDeg, true
 }
 
-// ForecastField returns the forecast for the whole grid after k steps, with
-// NaN where the rain would come from outside the radar coverage. It is meant
-// for verification and maps; point queries should use Forecast.
-func (n *Nowcast) ForecastField(k int) *Field {
+// ForecastFields returns the forecast for the whole grid at steps 1…steps,
+// with NaN where the rain would come from outside the radar coverage. It is
+// meant for verification and maps; point queries should use Forecast.
+func (n *Nowcast) ForecastFields(steps int) []*Field {
 	w, h := n.Latest.W, n.Latest.H
-	out := &Field{W: w, H: h, V: make([]float32, w*h)}
+	out := make([]*Field, steps)
+	for k := range out {
+		out[k] = &Field{W: w, H: h, V: make([]float32, w*h)}
+	}
 	for row := 0; row < h; row++ {
 		for col := 0; col < w; col++ {
 			x, y := float64(col)+0.5, float64(row)+0.5
-			for range k {
+			for k := range steps {
 				x, y = n.stepBack(x, y)
+				out[k].V[row*w+col] = n.Latest.At(int(math.Floor(x)), int(math.Floor(y)))
 			}
-			out.V[row*w+col] = n.Latest.At(int(math.Floor(x)), int(math.Floor(y)))
 		}
 	}
 	return out

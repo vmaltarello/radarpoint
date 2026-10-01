@@ -177,3 +177,26 @@ func TestOutsidePoint(t *testing.T) {
 		t.Error("expected ErrOutside")
 	}
 }
+
+func TestForecastFieldsMatchPointForecast(t *testing.T) {
+	const w, h = 200, 200
+	fr := frames(randomBlobs(30, w, h), w, h, 3, 3, 2)
+	n, err := Compute(fr, tm, gt, step, 6, DefaultOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := n.ForecastFields(6)
+	for _, p := range [][2]int{{50, 50}, {120, 80}, {180, 190}} {
+		lat, lon := tm.Inverse(gt.Center(p[0], p[1]))
+		pts, err := n.Forecast(lat, lon)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k := 1; k <= 6; k++ {
+			a, b := float64(fields[k-1].At(p[0], p[1])), pts[k].Value
+			if a != b && !(math.IsNaN(a) && math.IsNaN(b)) {
+				t.Errorf("pixel %v step %d: field %v, point %v", p, k, a, b)
+			}
+		}
+	}
+}
