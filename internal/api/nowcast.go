@@ -22,7 +22,7 @@ func (s *Server) registerNowcast(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "nowcast",
 		Method:      http.MethodGet,
-		Path:        "/nowcast",
+		Path:        Prefix + "/nowcast",
 		Summary:     "Rain and hail forecast for the next hour at a point",
 		Description: "Lead 0 is the latest observation, followed by one value per 5-minute step up to 60 minutes. " +
 			"When POH is followed, the probability of hail is moved with the rain as well. " + nowcastNote,

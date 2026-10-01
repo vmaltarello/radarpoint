@@ -2,7 +2,7 @@
 // answers point queries over HTTP.
 //
 //	radarpointd --listen :8080 --products SRI,POH,TEMP
-//	curl 'localhost:8080/now?lat=45.5966&lon=8.915'
+//	curl 'localhost:8080/v1/now?lat=45.5966&lon=8.915'
 package main
 
 import (

@@ -36,7 +36,7 @@ func nowcastServer(t *testing.T) *Server {
 func TestNowcast(t *testing.T) {
 	s := nowcastServer(t)
 	var b NowcastBody
-	get(t, s, "/nowcast?lat=45.78886&lon=6.01149", http.StatusOK, &b)
+	get(t, s, "/v1/nowcast?lat=45.78886&lon=6.01149", http.StatusOK, &b)
 	if b.Status != StatusOK || b.BaseTime == nil || !b.BaseTime.Equal(t0) || len(b.Steps) != 13 || b.Attribution == "" {
 		t.Fatalf("nowcast %+v", b)
 	}
@@ -57,7 +57,7 @@ func TestNowcast(t *testing.T) {
 		t.Errorf("motion %+v, want 0 km/h", b.Motion)
 	}
 
-	get(t, s, "/nowcast?lat=41.9&lon=12.5", http.StatusOK, &b)
+	get(t, s, "/v1/nowcast?lat=41.9&lon=12.5", http.StatusOK, &b)
 	if b.Status != StatusOutside || len(b.Steps) != 0 {
 		t.Errorf("outside: %+v", b)
 	}
@@ -67,7 +67,7 @@ func TestNowcastUnavailable(t *testing.T) {
 	s := newServer(t)
 	s.Nowcast = func() *nowcast.Nowcast { return nil }
 	var b NowcastBody
-	get(t, s, "/nowcast?lat=45.6&lon=8.9", http.StatusOK, &b)
+	get(t, s, "/v1/nowcast?lat=45.6&lon=8.9", http.StatusOK, &b)
 	if b.Status != StatusUnavailable || b.BaseTime != nil {
 		t.Errorf("%+v", b)
 	}
@@ -75,7 +75,7 @@ func TestNowcastUnavailable(t *testing.T) {
 
 func TestNowcastNotServedWithoutEngine(t *testing.T) {
 	rec := httptest.NewRecorder()
-	newServer(t).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nowcast?lat=45.6&lon=8.9", nil))
+	newServer(t).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/nowcast?lat=45.6&lon=8.9", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status %d, want 404", rec.Code)
 	}
@@ -91,7 +91,7 @@ func TestNowcastHail(t *testing.T) {
 	s.Nowcast = func() *nowcast.Nowcast { return withHail }
 
 	var b NowcastBody
-	get(t, s, "/nowcast?lat=45.78886&lon=6.01149", http.StatusOK, &b)
+	get(t, s, "/v1/nowcast?lat=45.78886&lon=6.01149", http.StatusOK, &b)
 	for _, st := range b.Steps {
 		if st.HailPercent == nil || *st.HailPercent != 202 {
 			t.Fatalf("step +%d hail_percent %v, want 202", st.LeadMinutes, deref(st.HailPercent))

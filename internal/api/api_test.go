@@ -53,10 +53,10 @@ func TestNow(t *testing.T) {
 		poh      string
 		ageCheck bool
 	}{
-		{"zero rain", "/now?lat=45.5966&lon=8.915", StatusOK, new(float64), StatusUnavailable, true},
-		{"rain", "/now?lat=45.78886&lon=6.01149", StatusOK, ptr(2.02), StatusUnavailable, false},
-		{"no radar", "/now?lat=46.02527&lon=4.75645", StatusNoData, nil, StatusUnavailable, false},
-		{"outside", "/now?lat=41.9&lon=12.5", StatusOutside, nil, StatusUnavailable, false},
+		{"zero rain", "/v1/now?lat=45.5966&lon=8.915", StatusOK, new(float64), StatusUnavailable, true},
+		{"rain", "/v1/now?lat=45.78886&lon=6.01149", StatusOK, ptr(2.02), StatusUnavailable, false},
+		{"no radar", "/v1/now?lat=46.02527&lon=4.75645", StatusNoData, nil, StatusUnavailable, false},
+		{"outside", "/v1/now?lat=41.9&lon=12.5", StatusOutside, nil, StatusUnavailable, false},
 	} {
 		var resp PointBody
 		get(t, s, c.url, http.StatusOK, &resp)
@@ -78,7 +78,7 @@ func TestNow(t *testing.T) {
 
 func TestHistory(t *testing.T) {
 	var resp PointBody
-	get(t, newServer(t), "/history?lat=45.5966&lon=8.915&product=SRI", http.StatusOK, &resp)
+	get(t, newServer(t), "/v1/history?lat=45.5966&lon=8.915&product=SRI", http.StatusOK, &resp)
 	if len(resp.Readings) != 2 || !resp.Readings[0].Time.Before(*resp.Readings[1].Time) {
 		t.Fatalf("history %+v", resp.Readings)
 	}
@@ -87,8 +87,8 @@ func TestHistory(t *testing.T) {
 func TestBadRequests(t *testing.T) {
 	s := newServer(t)
 	for _, url := range []string{
-		"/now", "/now?lat=x&lon=1", "/now?lat=91&lon=1", "/now?lat=NaN&lon=1",
-		"/history?lat=45&lon=9", "/history?lat=45&lon=9&product=TEMP", "/history?lat=45&lon=9&product=sri",
+		"/v1/now", "/v1/now?lat=x&lon=1", "/v1/now?lat=91&lon=1", "/v1/now?lat=NaN&lon=1",
+		"/v1/history?lat=45&lon=9", "/v1/history?lat=45&lon=9&product=TEMP", "/v1/history?lat=45&lon=9&product=sri",
 	} {
 		var e struct {
 			Status int
@@ -106,13 +106,13 @@ func TestOpenAPI(t *testing.T) {
 		Paths map[string]any
 	}
 	get(t, newServer(t), "/openapi.json", http.StatusOK, &doc)
-	for _, p := range []string{"/now", "/history", "/healthz"} {
+	for _, p := range []string{"/v1/now", "/v1/history", "/healthz"} {
 		if doc.Paths[p] == nil {
 			t.Errorf("OpenAPI lacks %s", p)
 		}
 	}
 	// The product parameter lists exactly the products the server follows.
-	raw, _ := json.Marshal(doc.Paths["/history"])
+	raw, _ := json.Marshal(doc.Paths["/v1/history"])
 	if !strings.Contains(string(raw), `"enum":["SRI","POH"]`) {
 		t.Errorf("history product enum missing: %s", raw)
 	}
@@ -150,13 +150,13 @@ func TestStale(t *testing.T) {
 	s := newServer(t)
 	// 9 minutes after the frame time is normal for SRI.
 	var resp PointBody
-	get(t, s, "/now?lat=45.5966&lon=8.915", http.StatusOK, &resp)
+	get(t, s, "/v1/now?lat=45.5966&lon=8.915", http.StatusOK, &resp)
 	if resp.Readings[0].Stale {
 		t.Error("fresh SRI reported stale")
 	}
 	// 25 minutes without a new frame: Radar-DPC is late.
 	s.Now = func() time.Time { return t0.Add(25 * time.Minute) }
-	get(t, s, "/now?lat=45.5966&lon=8.915", http.StatusOK, &resp)
+	get(t, s, "/v1/now?lat=45.5966&lon=8.915", http.StatusOK, &resp)
 	if sri := resp.Readings[0]; !sri.Stale || sri.Status != StatusOK || sri.Value == nil {
 		t.Errorf("late SRI: %+v; want stale with its value kept", sri)
 	}
@@ -168,5 +168,16 @@ func TestStale(t *testing.T) {
 	get(t, s, "/healthz", http.StatusServiceUnavailable, &h)
 	if h.OK || !h.Products["SRI"].Stale {
 		t.Errorf("health %+v", h)
+	}
+}
+
+func TestUnversionedPathsAreGone(t *testing.T) {
+	h := newServer(t).Handler()
+	for _, url := range []string{"/now?lat=45&lon=9", "/history?lat=45&lon=9&product=SRI"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status %d, want 404", url, rec.Code)
+		}
 	}
 }

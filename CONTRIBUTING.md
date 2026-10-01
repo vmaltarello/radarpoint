@@ -56,7 +56,7 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/):
 a single line, imperative mood, lower case after the colon, no final period.
 
 ```
-feat(api): add hail probability to /nowcast
+feat(api): add hail probability to /v1/nowcast
 fix(raster): handle tiled GeoTIFF files
 docs: explain the TEMP nodata mask
 test(dpc): cover expired download URLs

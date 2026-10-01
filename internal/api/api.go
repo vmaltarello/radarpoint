@@ -1,9 +1,13 @@
 // Package api serves point queries over the frames held in a store.
 //
-//	GET /now?lat=45.5966&lon=8.915          latest value of every product
-//	GET /history?lat=…&lon=…&product=SRI    all stored frames of one product
+//	GET /v1/now?lat=45.5966&lon=8.915       latest value of every product
+//	GET /v1/history?lat=…&lon=…&product=SRI all stored frames of one product
+//	GET /v1/nowcast?lat=…&lon=…             rain and hail forecast, next hour
 //	GET /healthz                            frames held per product
 //	GET /docs, /openapi.json                interactive docs and OpenAPI schema
+//
+// The data endpoints are versioned: a breaking change gets a new prefix and
+// the old one keeps working for a while. Operational endpoints are not.
 //
 // It is built with Huma, which validates the parameters and generates the
 // OpenAPI description. Responses always carry the Radar-DPC attribution.
@@ -25,6 +29,9 @@ import (
 	"github.com/vmaltarello/radarpoint/internal/raster"
 	"github.com/vmaltarello/radarpoint/internal/store"
 )
+
+// Prefix is the path prefix of the current API version.
+const Prefix = "/v1"
 
 // Value statuses.
 const (
@@ -56,17 +63,17 @@ func (s *Server) Handler() http.Handler {
 	huma.Register(api, huma.Operation{
 		OperationID: "now",
 		Method:      http.MethodGet,
-		Path:        "/now",
+		Path:        Prefix + "/now",
 		Summary:     "Latest value of every product at a point",
 	}, s.now)
 	huma.Register(api, huma.Operation{
 		OperationID: "history",
 		Method:      http.MethodGet,
-		Path:        "/history",
+		Path:        Prefix + "/history",
 		Summary:     "Values at a point for all frames held in memory",
 		Description: "Frames are ordered from oldest to newest and cover the configured window (30 minutes by default).",
 	}, s.history)
-	productEnum(api, "/history", s.Products)
+	productEnum(api, Prefix+"/history", s.Products)
 	if s.Nowcast != nil {
 		s.registerNowcast(api)
 	}

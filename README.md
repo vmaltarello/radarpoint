@@ -100,15 +100,20 @@ radarpointd --listen :8080 --products SRI,POH,TEMP --window 30m
 
 | Endpoint | Returns |
 |---|---|
-| `GET /now?lat=&lon=` | latest value of every product at the point |
-| `GET /history?lat=&lon=&product=SRI` | values of all frames held in memory, oldest first; `product` must be one of the products the service follows |
-| `GET /nowcast?lat=&lon=` | rain and hail forecast for the next hour, in 5-minute steps (see [Nowcast](#nowcast)) |
+| `GET /v1/now?lat=&lon=` | latest value of every product at the point |
+| `GET /v1/history?lat=&lon=&product=SRI` | values of all frames held in memory, oldest first; `product` must be one of the products the service follows |
+| `GET /v1/nowcast?lat=&lon=` | rain and hail forecast for the next hour, in 5-minute steps (see [Nowcast](#nowcast)) |
 | `GET /healthz` | frames held per product; `503` until every product has data |
 | `GET /docs` | interactive API documentation |
 | `GET /openapi.json` | OpenAPI 3.1 description |
 
+The data endpoints are versioned under `/v1`. Breaking changes will get a new
+prefix (`/v2`), with the old one kept for a transition period; additions, such
+as new fields in a response, can happen within a version. `/healthz`, `/docs`
+and `/openapi.json` are for operators and are not versioned.
+
 ```
-$ curl 'localhost:8080/now?lat=45.5966&lon=8.915'
+$ curl 'localhost:8080/v1/now?lat=45.5966&lon=8.915'
 {
   "lat": 45.5966,
   "lon": 8.915,
@@ -166,7 +171,7 @@ standard baseline in radar nowcasting:
    where the rain comes from.
 
 The motion is recomputed once for every new SRI frame (about 0.5 s on a
-desktop CPU, mostly spent decoding the first frames); a `/nowcast` query then
+desktop CPU, mostly spent decoding the first frames); a `/v1/nowcast` query then
 takes microseconds.
 
 **Hail.** When POH is followed too, the probability of hail observed at the
@@ -174,7 +179,7 @@ same time is moved along the same trajectories: hail falls from the same storm
 cells as the heaviest rain. Each step then carries `hail_percent`.
 
 ```
-$ curl 'localhost:8080/nowcast?lat=45.5966&lon=8.915'
+$ curl 'localhost:8080/v1/nowcast?lat=45.5966&lon=8.915'
 {
   "lat": 45.5966, "lon": 8.915, "product": "SRI", "unit": "mm/h",
   "status": "ok",
@@ -404,8 +409,8 @@ output that shows data.
 
 1. ~~A service that downloads each product once and keeps the last 30 minutes
    in memory.~~ Done: `radarpointd`.
-2. ~~`/now` HTTP API.~~ Done.
-3. ~~Nowcast by motion extrapolation behind `/nowcast`.~~ Done. Next: the
+2. ~~`/v1/now` HTTP API.~~ Done.
+3. ~~Nowcast by motion extrapolation behind `/v1/nowcast`.~~ Done. Next: the
    [IRENE](https://huggingface.co/it4lia/irene) model (BSD 2-Clause), which
    also learns growth and decay, scored with `nowcastverify` against the
    extrapolation.
