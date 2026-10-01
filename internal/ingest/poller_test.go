@@ -91,6 +91,8 @@ func TestBackfillAndFollow(t *testing.T) {
 	f.missing[t0.Add(-10*time.Minute).UnixMilli()] = true // 12:20 never published
 	st := store.New()
 	p := f.poller(st, t0.Add(8*time.Minute))
+	updates := 0
+	p.OnUpdate = func() { updates++ }
 
 	// First poll: the 6 instants of the 30-minute window, 12:05…12:30.
 	wait, err := p.Poll(context.Background())
@@ -99,6 +101,9 @@ func TestBackfillAndFollow(t *testing.T) {
 	}
 	if n := len(f.takeAsked()); n != 6 {
 		t.Fatalf("asked %d instants, want 6", n)
+	}
+	if updates != 1 {
+		t.Errorf("OnUpdate called %d times, want 1", updates)
 	}
 	frames := st.Frames("SRI")
 	if len(frames) != 5 || !frames[0].Time.Equal(t0.Add(-25*time.Minute)) || !frames[4].Time.Equal(t0) {
@@ -118,6 +123,9 @@ func TestBackfillAndFollow(t *testing.T) {
 	}
 	if a := f.takeAsked(); len(a) != 0 {
 		t.Fatalf("asked %v, want nothing", a)
+	}
+	if updates != 1 {
+		t.Errorf("OnUpdate called without new frames")
 	}
 
 	// 12:35 appears: only that instant is downloaded, 12:05 is dropped.

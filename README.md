@@ -24,7 +24,8 @@ The project has two programs:
 - `radarpoint`, a command-line tool that performs a single reading and exits;
 - `radarpointd`, a small HTTP service that downloads each product once, as
   soon as it is published, keeps the last 30 minutes in memory and answers
-  point queries for any number of clients (see [HTTP service](#http-service)).
+  point queries for any number of clients, including a rain forecast for
+  the next hour (see [HTTP service](#http-service) and [Nowcast](#nowcast)).
 
 - Pure Go, a single static binary, no GDAL or other C libraries.
 - No API key or registration needed: Radar-DPC data is open.
@@ -101,6 +102,7 @@ radarpointd --listen :8080 --products SRI,POH,TEMP --window 30m
 |---|---|
 | `GET /now?lat=&lon=` | latest value of every product at the point |
 | `GET /history?lat=&lon=&product=SRI` | values of all frames held in memory, oldest first; `product` must be one of the products the service follows |
+| `GET /nowcast?lat=&lon=` | rain forecast for the next hour, in 5-minute steps (see [Nowcast](#nowcast)) |
 | `GET /healthz` | frames held per product; `503` until every product has data |
 | `GET /docs` | interactive API documentation |
 | `GET /openapi.json` | OpenAPI 3.1 description |
@@ -145,6 +147,73 @@ How the service talks to Radar-DPC:
 So the load on Radar-DPC does not depend on the number of clients: a few small
 requests and one download per product every 5 minutes.
 
+## Nowcast
+
+Radar-DPC publishes observations only. `radarpointd` computes its own short-term
+forecast from the SRI frames it holds, using **Lagrangian persistence**, the
+standard baseline in radar nowcasting:
+
+1. **Motion.** Consecutive frames are compared block by block (48 km blocks,
+   on a 2 km grid). For each block, the shift that best overlays the older
+   frame on the newer one is the displacement of the rain. Displacements from
+   the last 5 frame pairs are averaged, blocks without rain take the median
+   motion, and the field is smoothed.
+2. **Extrapolation.** To forecast a point at +k steps, the motion is followed
+   backwards from the point for k steps, and the latest observation is read
+   where the rain comes from.
+
+The motion is recomputed once for every new SRI frame (about 0.5 s on a
+desktop CPU, mostly spent decoding the first frames); a `/nowcast` query then
+takes microseconds.
+
+```
+ 'localhost:8080/nowcast?lat=45.5966&lon=8.915'
+{
+  "lat": 45.5966, "lon": 8.915, "product": "SRI", "unit": "mm/h",
+  "status": "ok",
+  "base_time": "2026-10-01T13:45:00Z",
+  "motion": {"speed_kmh": 10, "toward_deg": 109},
+  "steps": [
+    {"time": "2026-10-01T13:45:00Z", "lead_minutes": 0,  "status": "ok", "value": 0},
+    {"time": "2026-10-01T13:50:00Z", "lead_minutes": 5,  "status": "ok", "value": 0},
+    …
+    {"time": "2026-10-01T14:45:00Z", "lead_minutes": 60, "status": "ok", "value": 0}
+  ],
+  "method": "lagrangian-persistence",
+  …
+}
+```
+
+Lead 0 is the observation the forecast starts from. A step has status
+`nodata` when the rain would come from outside the radar coverage.
+The endpoint exists only when SRI is among the followed `--products`, and
+answers `unavailable` until two SRI frames have been downloaded.
+
+**Limits.** Rain is moved but never created, grown or dissipated: storms that
+form from nothing are not anticipated, and decaying ones seem to last. Skill
+drops with lead time; treat 30–60 minutes as indicative.
+
+### Verification
+
+`go run ./cmd/nowcastverify` downloads the last 90 minutes of SRI, forecasts
+from frames one hour old, and scores each step against what the radar then
+observed, next to persistence (rain that stays where it is). The score is the
+critical success index (CSI): hits / (hits + misses + false alarms), from 0 to 1.
+
+Two runs on 1 October 2026 (light, scattered rain over about 3% of the area):
+
+| Lead | ≥0.5 mm/h nowcast | persistence | ≥5 mm/h nowcast | persistence |
+|---|---|---|---|---|
+| +5 min | 0.83–0.84 | 0.81–0.85 | 0.68–0.78 | 0.63–0.76 |
+| +15 min | 0.72 | 0.65–0.67 | 0.41–0.63 | 0.30–0.49 |
+| +30 min | 0.57–0.60 | 0.48–0.50 | 0.24–0.51 | 0.15–0.30 |
+| +60 min | 0.39–0.44 | 0.31–0.35 | 0.13–0.25 | 0.06–0.07 |
+
+The nowcast beats persistence from +10 minutes on, and the gap grows with
+lead time, especially for heavier rain. More runs, in particular during
+widespread and convective events, are needed before drawing firm
+conclusions; contributions of verification results are welcome.
+
 ## How it works
 
 1. `GET /findLastProductByType?type=SRI` returns the time of the latest
@@ -169,9 +238,11 @@ cmd/radarpoint/     the command-line tool
 cmd/radarpointd/    the HTTP service
 cmd/tiffdump/       inspect a GeoTIFF
 cmd/tiffcrop/       cut a band of rows out of a GeoTIFF
+cmd/nowcastverify/ score the nowcast against real observations
 internal/dpc/       Radar-DPC API client and product catalogue (units, nodata)
 internal/ingest/    keeps the store up to date with the latest products
 internal/store/     frames held in memory
+internal/nowcast/   motion estimation and rain extrapolation
 internal/api/       HTTP API, built with Huma
 internal/raster/    minimal TIFF/GeoTIFF reader
 internal/geo/       Transverse Mercator projection and pixel transform
@@ -309,9 +380,10 @@ output that shows data.
 1. ~~A service that downloads each product once and keeps the last 30 minutes
    in memory.~~ Done: `radarpointd`.
 2. ~~`/now` HTTP API.~~ Done.
-3. Nowcasting up to 60 minutes behind `/nowcast?lat=&lon=`: first a simple
-   motion extrapolation in Go, then the
-   [IRENE](https://huggingface.co/it4lia/irene) model (BSD 2-Clause).
+3. ~~Nowcast by motion extrapolation behind `/nowcast`.~~ Done. Next: the
+   [IRENE](https://huggingface.co/it4lia/irene) model (BSD 2-Clause), which
+   also learns growth and decay, scored with `nowcastverify` against the
+   extrapolation.
 4. A web map: radar layers over a map, click a point to see its current value
    and the last 30 minutes, built on the HTTP API.
 5. Container image for easy deployment.

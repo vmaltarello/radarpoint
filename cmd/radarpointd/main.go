@@ -22,6 +22,7 @@ import (
 	"github.com/vmaltarello/radarpoint/internal/api"
 	"github.com/vmaltarello/radarpoint/internal/dpc"
 	"github.com/vmaltarello/radarpoint/internal/ingest"
+	"github.com/vmaltarello/radarpoint/internal/nowcast"
 	"github.com/vmaltarello/radarpoint/internal/store"
 )
 
@@ -56,15 +57,34 @@ func main() {
 
 	st := store.New()
 	client := dpc.New(userAgent)
+
+	// The rain nowcast is recomputed from the SRI frames each time a new one
+	// arrives: 12 steps of 5 minutes.
+	sri, _ := dpc.Lookup("SRI")
+	engine := &nowcast.Engine{Steps: 12, Options: nowcast.DefaultOptions, IsNoData: sri.IsNoData}
+	updateNowcast := func() {
+		start := time.Now()
+		n, err := engine.Update(st.Frames("SRI"))
+		if err != nil {
+			log.Info("nowcast not updated", "reason", err)
+			return
+		}
+		log.Info("nowcast updated", "base", n.Base, "pairs", n.Pairs,
+			"tracked_blocks", n.Motion.Measured, "took", time.Since(start).Round(time.Millisecond))
+	}
+
 	var wg sync.WaitGroup
 	for _, p := range types {
 		poller := &ingest.Poller{Client: client, Store: st, Product: p, Window: *window, Log: log}
+		if p == "SRI" {
+			poller.OnUpdate = updateNowcast
+		}
 		wg.Go(func() { poller.Run(ctx) })
 	}
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           (&api.Server{Store: st, Products: types}).Handler(),
+		Handler:           apiServer(st, types, engine).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,
 	}
@@ -84,4 +104,14 @@ func main() {
 	}
 	wg.Wait()
 	log.Info("stopped")
+}
+
+// apiServer serves /nowcast only when SRI, the product it is based on, is
+// followed.
+func apiServer(st *store.Store, products []string, engine *nowcast.Engine) *api.Server {
+	s := &api.Server{Store: st, Products: products}
+	if slices.Contains(products, "SRI") {
+		s.Nowcast = engine.Current
+	}
+	return s
 }

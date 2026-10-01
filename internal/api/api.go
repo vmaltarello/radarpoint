@@ -21,6 +21,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/nowcast"
 	"github.com/vmaltarello/radarpoint/internal/raster"
 	"github.com/vmaltarello/radarpoint/internal/store"
 )
@@ -37,8 +38,11 @@ const (
 type Server struct {
 	Store    *store.Store
 	Products []string
-	Version  string           // shown in the OpenAPI description
-	Now      func() time.Time // for tests; defaults to time.Now
+	// Nowcast returns the latest rain forecast, or nil; if Nowcast itself is
+	// nil the /nowcast endpoint is not served.
+	Nowcast func() *nowcast.Nowcast
+	Version string           // shown in the OpenAPI description
+	Now     func() time.Time // for tests; defaults to time.Now
 }
 
 // Handler returns the HTTP handler with all routes and the API docs.
@@ -63,6 +67,9 @@ func (s *Server) Handler() http.Handler {
 		Description: "Frames are ordered from oldest to newest and cover the configured window (30 minutes by default).",
 	}, s.history)
 	productEnum(api, "/history", s.Products)
+	if s.Nowcast != nil {
+		s.registerNowcast(api)
+	}
 	huma.Register(api, huma.Operation{
 		OperationID: "health",
 		Method:      http.MethodGet,

@@ -27,6 +27,8 @@ type Poller struct {
 	// latest frame is always kept, whatever the product period.
 	Window time.Duration
 	Log    *slog.Logger
+	// OnUpdate, if set, is called after a poll that added at least one frame.
+	OnUpdate func()
 
 	now func() time.Time // for tests
 	// missing remembers instants the API answered 404 for, so they are not
@@ -64,6 +66,7 @@ func (p *Poller) Poll(ctx context.Context) (time.Duration, error) {
 
 	keep := p.keep(period)
 	var errs []error
+	added := 0
 	oldest := last.Time.Add(-time.Duration(keep-1) * period)
 	if p.missing == nil {
 		p.missing = map[time.Time]bool{}
@@ -87,8 +90,12 @@ func (p *Poller) Poll(ctx context.Context) (time.Duration, error) {
 			errs = append(errs, fmt.Errorf("%s %s: %w", p.Product, t.Format(time.RFC3339), err))
 		default:
 			p.Store.Add(f)
+			added++
 			p.log().Info("new frame", "product", p.Product, "time", t, "bytes", f.Size)
 		}
+	}
+	if added > 0 && p.OnUpdate != nil {
+		p.OnUpdate()
 	}
 	if len(errs) > 0 {
 		return time.Minute, errors.Join(errs...)
