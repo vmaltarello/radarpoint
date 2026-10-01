@@ -42,7 +42,13 @@ func (s *source) field(ctx context.Context, t time.Time) (*nowcast.Field, error)
 		return nil, nil
 	}
 	b, err := s.file(ctx, t)
-	if errors.Is(err, dpc.ErrNotFound) {
+	var apiErr *dpc.APIError
+	if errors.Is(err, dpc.ErrNotFound) || (errors.As(err, &apiErr) && apiErr.Status >= 500) {
+		// Missing, or broken on the Radar-DPC side (it sometimes answers 500
+		// for a file absent from its bucket): skip this instant.
+		if !errors.Is(err, dpc.ErrNotFound) {
+			fmt.Fprintf(os.Stderr, "skipping %s: %v\n", t.Format("2006-01-02 15:04"), err)
+		}
 		s.missing[t] = true
 		return nil, nil
 	}

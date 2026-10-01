@@ -47,6 +47,7 @@ type options struct {
 	days    int
 	minRain float64
 	cache   string
+	nowcast nowcast.Options
 }
 
 func main() {
@@ -59,6 +60,12 @@ func main() {
 	flag.IntVar(&o.days, "days", 13, "with --cases: how many days back to look")
 	flag.Float64Var(&o.minRain, "min-rain", 0.5, "with --cases: skip moments with less rain than this (% of the covered area)")
 	flag.StringVar(&o.cache, "cache", defaultCache(), `directory where downloaded files are kept ("" to disable)`)
+	o.nowcast = nowcast.DefaultOptions
+	flag.BoolVar(&o.nowcast.Robust, "robust", o.nowcast.Robust, "combine frame pairs with a median instead of a mean")
+	flag.Float64Var(&o.nowcast.RecencyDecay, "decay", o.nowcast.RecencyDecay, "weight of each older frame pair relative to the next (1 = equal)")
+	flag.Float64Var(&o.nowcast.SmoothPerStep, "smooth", o.nowcast.SmoothPerStep, "forecast smoothing growth, pixels per step (0 = none)")
+	flag.Float64Var(&o.nowcast.ProbRadius, "prob-radius", o.nowcast.ProbRadius, "probability neighbourhood half side at lead 0, pixels")
+	flag.Float64Var(&o.nowcast.ProbRadiusPerStep, "prob-growth", o.nowcast.ProbRadiusPerStep, "probability neighbourhood growth, pixels per step")
 	flag.Parse()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
@@ -112,6 +119,7 @@ func run(ctx context.Context, o options) error {
 	// scores[k][j]: lead k+1, threshold j.
 	nc := make([][]table, steps)
 	ps := make([][]table, steps)
+	rel := make([]reliability, steps)
 	for k := range steps {
 		nc[k], ps[k] = make([]table, len(thresholds)), make([]table, len(thresholds))
 	}
@@ -136,12 +144,13 @@ func run(ctx context.Context, o options) error {
 			fmt.Printf("%s  skipped: no frame at the base time\n", base.Format("2006-01-02 15:04"))
 			continue
 		}
-		n, err := nowcast.Compute(in, src.grid.Projection, src.grid.Transform, step, steps, nowcast.DefaultOptions)
+		n, err := nowcast.Compute(in, src.grid.Projection, src.grid.Transform, step, steps, o.nowcast)
 		if err != nil {
 			fmt.Printf("%s  skipped: %v\n", base.Format("2006-01-02 15:04"), err)
 			continue
 		}
 		forecasts := n.ForecastFields(n.Latest, steps)
+		probs := n.ProbabilityFields(steps)
 
 		var case30 [2]table
 		for k := range steps {
@@ -156,6 +165,7 @@ func run(ctx context.Context, o options) error {
 				nc[k][j].add(forecasts[k].V, obs.V, thr)
 				ps[k][j].add(baseField.V, obs.V, thr)
 			}
+			rel[k].add(probs[k].V, forecasts[k].V, obs.V, o.nowcast.ProbThreshold)
 			if k == 5 {
 				case30[0].add(forecasts[k].V, obs.V, 0.5)
 				case30[1].add(baseField.V, obs.V, 0.5)
@@ -171,6 +181,7 @@ func run(ctx context.Context, o options) error {
 		fmt.Printf("+%2dm              %7s  %8s               %7s  %8s\n", (k+1)*5,
 			num(nc[k][0].csi()), num(ps[k][0].csi()), num(nc[k][1].csi()), num(ps[k][1].csi()))
 	}
+	printReliability(rel, o.nowcast.ProbThreshold)
 	fmt.Fprintf(os.Stderr, "\n%d files downloaded, cache: %s\n", src.fetched, cmp.Or(o.cache, "disabled"))
 	fmt.Println("\nData: " + dpc.Attribution)
 	return nil
@@ -217,4 +228,44 @@ func num(v float64) string {
 		return "–"
 	}
 	return fmt.Sprintf("%.3f", v)
+}
+
+// printReliability shows, for a few lead times, how often it rained when a
+// given probability was forecast, and the Brier scores.
+func printReliability(rel []reliability, threshold float32) {
+	leads := []int{2, 5, 11} // +15, +30 and +60 minutes
+	fmt.Printf("\nProbability of rain (≥ %g mm/h): observed frequency for each forecast range\n", threshold)
+	fmt.Println("forecast        +15m          +30m          +60m")
+	for b := range 10 {
+		fmt.Printf("%3d–%3d%%  ", b*10, b*10+10)
+		for _, k := range leads {
+			if k >= len(rel) {
+				continue
+			}
+			fmt.Printf("  %5s %6s", pct(rel[k].observed(b)), share(rel[k].count[b], rel[k].n))
+		}
+		fmt.Println()
+	}
+	fmt.Print("Brier score, probability (yes/no forecast); lower is better:")
+	for _, k := range leads {
+		if k < len(rel) && rel[k].n > 0 {
+			fmt.Printf("  %.4f (%.4f)", rel[k].brier/float64(rel[k].n), rel[k].brierYesNo/float64(rel[k].n))
+		}
+	}
+	fmt.Println()
+}
+
+func pct(v float64) string {
+	if math.IsNaN(v) {
+		return "–"
+	}
+	return fmt.Sprintf("%.0f%%", v*100)
+}
+
+// share is the fraction of samples in a bin, shown as [x%].
+func share(c, n int64) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("[%.1f%%]", 100*float64(c)/float64(n))
 }
