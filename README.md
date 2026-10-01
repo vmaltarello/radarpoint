@@ -199,24 +199,34 @@ drops with lead time; treat 30–60 minutes as indicative.
 
 ### Verification
 
-`go run ./cmd/nowcastverify` downloads the last 90 minutes of SRI, forecasts
-from frames one hour old, and scores each step against what the radar then
-observed, next to persistence (rain that stays where it is). The score is the
-critical success index (CSI): hits / (hits + misses + false alarms), from 0 to 1.
+`go run ./cmd/nowcastverify` forecasts from frames one hour old and scores each
+step against what the radar then observed, next to persistence (rain that
+stays where it is). The score is the critical success index (CSI):
+hits / (hits + misses + false alarms), from 0 (no skill) to 1 (perfect),
+summed over all pixels with rain above a threshold.
 
-Two runs on 1 October 2026 (light, scattered rain over about 3% of the area):
+With `--cases 20` it scans the last 13 days (one frame every 3 hours), picks
+the 20 moments with the most rain and adds up their scores. Downloaded files
+are cached (in `~/.cache/radarpoint/sri` on Linux), so later runs are quick
+and do not load Radar-DPC again; the first run downloads about 430 files
+(~200 MB).
+
+Results of `--cases 20` on 1 October 2026 (18 September – 1 October, rain
+over 2.4–6.5% of the covered area):
 
 | Lead | ≥0.5 mm/h nowcast | persistence | ≥5 mm/h nowcast | persistence |
 |---|---|---|---|---|
-| +5 min | 0.83–0.84 | 0.81–0.85 | 0.68–0.78 | 0.63–0.76 |
-| +15 min | 0.72 | 0.65–0.67 | 0.41–0.63 | 0.30–0.49 |
-| +30 min | 0.57–0.60 | 0.48–0.50 | 0.24–0.51 | 0.15–0.30 |
-| +60 min | 0.39–0.44 | 0.31–0.35 | 0.13–0.25 | 0.06–0.07 |
+| +5 min | 0.815 | 0.797 | 0.695 | 0.680 |
+| +15 min | 0.655 | 0.590 | 0.425 | 0.345 |
+| +30 min | 0.497 | 0.420 | 0.242 | 0.178 |
+| +45 min | 0.410 | 0.329 | 0.156 | 0.114 |
+| +60 min | 0.346 | 0.262 | 0.125 | 0.080 |
 
-The nowcast beats persistence from +10 minutes on, and the gap grows with
-lead time, especially for heavier rain. More runs, in particular during
-widespread and convective events, are needed before drawing firm
-conclusions; contributions of verification results are welcome.
+The nowcast beats persistence at every lead time, by about 20% at 30 minutes
+and 25–55% for heavier rain. Absolute skill for heavy rain is low beyond
+30 minutes: intense cells grow and decay faster than they move, which
+extrapolation cannot capture. None of these cases had widespread rain (more
+than 10% of the area); results on such days are welcome.
 
 ## How it works
 
@@ -243,6 +253,7 @@ cmd/radarpointd/    the HTTP service
 cmd/tiffdump/       inspect a GeoTIFF
 cmd/tiffcrop/       cut a band of rows out of a GeoTIFF
 cmd/nowcastverify/ score the nowcast against real observations
+.github/        CI workflow and issue templates
 internal/dpc/       Radar-DPC API client and product catalogue (units, nodata)
 internal/ingest/    keeps the store up to date with the latest products
 internal/store/     frames held in memory
@@ -369,7 +380,8 @@ Source: Radar-DPC – Dipartimento della Protezione Civile, CC-BY-SA 4.0.
 
 ## Contributing
 
-Issues and pull requests are welcome. Especially useful:
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development setup, checks and commit style. Especially useful:
 
 - the scale of POH values, from a file recorded during hail;
 - format notes for other products (VMI, SRT1, CUM*, CAPPI*, …);

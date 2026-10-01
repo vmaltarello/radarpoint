@@ -1,0 +1,25 @@
+name: Data finding
+description: Something new about Radar-DPC products, units, nodata values or the API
+labels: [data]
+body:
+  - type: input
+    id: product
+    attributes:
+      label: Product and time
+      description: Product type and the UTC time of the file.
+      placeholder: POH, 2026-10-12 15:35 UTC
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: What you found
+      description: For example the value range of POH during a hailstorm, or a changed API answer.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Output of `go run ./cmd/tiffdump file.tif`, an API response, or a link.
+      render: text
