@@ -102,7 +102,7 @@ radarpointd --listen :8080 --products SRI,POH,TEMP --window 30m
 |---|---|
 | `GET /now?lat=&lon=` | latest value of every product at the point |
 | `GET /history?lat=&lon=&product=SRI` | values of all frames held in memory, oldest first; `product` must be one of the products the service follows |
-| `GET /nowcast?lat=&lon=` | rain forecast for the next hour, in 5-minute steps (see [Nowcast](#nowcast)) |
+| `GET /nowcast?lat=&lon=` | rain and hail forecast for the next hour, in 5-minute steps (see [Nowcast](#nowcast)) |
 | `GET /healthz` | frames held per product; `503` until every product has data |
 | `GET /docs` | interactive API documentation |
 | `GET /openapi.json` | OpenAPI 3.1 description |
@@ -114,13 +114,13 @@ $ curl 'localhost:8080/now?lat=45.5966&lon=8.915'
   "lon": 8.915,
   "readings": [
     {"product": "SRI", "description": "rain rate at ground level",
-     "time": "2026-10-01T13:25:00Z", "age_seconds": 745,
+     "time": "2026-10-01T13:25:00Z", "age_seconds": 745, "stale": false,
      "status": "ok", "value": 0, "unit": "mm/h"},
     {"product": "POH", "description": "probability of hail",
-     "time": "2026-10-01T13:30:00Z", "age_seconds": 445,
-     "status": "ok", "value": 0},
+     "time": "2026-10-01T13:30:00Z", "age_seconds": 445, "stale": false,
+     "status": "ok", "value": 0, "unit": "%"},
     {"product": "TEMP", "description": "air temperature, interpolated from ground stations",
-     "time": "2026-10-01T13:00:00Z", "age_seconds": 2245,
+     "time": "2026-10-01T13:00:00Z", "age_seconds": 2245, "stale": false,
      "status": "ok", "value": 23.12, "unit": "°C"}
   ],
   "attribution": "Radar-DPC – Dipartimento della Protezione Civile (CC-BY-SA 4.0)"
@@ -133,9 +133,8 @@ downloaded yet); `value` is `null` unless the status is `ok`. `stale` is `true`
 when the data is older than it normally gets (more than 20 minutes for SRI and
 POH, 2.5 hours for TEMP): Radar-DPC has probably stopped publishing, and the
 value is kept but should not be presented as current. `/healthz` then answers
-`503`. Each reading
-carries its own `time`: products are updated at different rates and TEMP lags
-behind the radar products. Invalid parameters get a `422` answer in
+`503`. Each reading carries its own `time`: products are updated at different
+rates and TEMP lags behind the radar products. Invalid parameters get a `422` answer in
 [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem format. Responses
 allow cross-origin requests, so a web page can call the API directly.
 
@@ -170,18 +169,23 @@ The motion is recomputed once for every new SRI frame (about 0.5 s on a
 desktop CPU, mostly spent decoding the first frames); a `/nowcast` query then
 takes microseconds.
 
+**Hail.** When POH is followed too, the probability of hail observed at the
+same time is moved along the same trajectories: hail falls from the same storm
+cells as the heaviest rain. Each step then carries `hail_percent`.
+
 ```
- 'localhost:8080/nowcast?lat=45.5966&lon=8.915'
+$ curl 'localhost:8080/nowcast?lat=45.5966&lon=8.915'
 {
   "lat": 45.5966, "lon": 8.915, "product": "SRI", "unit": "mm/h",
   "status": "ok",
   "base_time": "2026-10-01T13:45:00Z",
+  "stale": false,
   "motion": {"speed_kmh": 10, "toward_deg": 109},
   "steps": [
-    {"time": "2026-10-01T13:45:00Z", "lead_minutes": 0,  "status": "ok", "value": 0},
-    {"time": "2026-10-01T13:50:00Z", "lead_minutes": 5,  "status": "ok", "value": 0},
+    {"time": "2026-10-01T13:45:00Z", "lead_minutes": 0,  "status": "ok", "value": 0, "hail_percent": 0},
+    {"time": "2026-10-01T13:50:00Z", "lead_minutes": 5,  "status": "ok", "value": 0, "hail_percent": 0},
     …
-    {"time": "2026-10-01T14:45:00Z", "lead_minutes": 60, "status": "ok", "value": 0}
+    {"time": "2026-10-01T14:45:00Z", "lead_minutes": 60, "status": "ok", "value": 0, "hail_percent": 0}
   ],
   "method": "lagrangian-persistence",
   …
@@ -190,6 +194,9 @@ takes microseconds.
 
 Lead 0 is the observation the forecast starts from. A step has status
 `nodata` when the rain would come from outside the radar coverage.
+`hail_percent` is `null` when POH is not followed or its latest frame does not
+have the same time as the rain frame yet (they are published a few seconds
+apart).
 The endpoint exists only when SRI is among the followed `--products`, and
 answers `unavailable` until two SRI frames have been downloaded.
 
@@ -295,8 +302,8 @@ everything below comes from inspecting the files and may change.
 | Coordinate system | Transverse Mercator | Transverse Mercator | EPSG:4326 |
 | Pixel size | 1000 m | 1000 m | 0.019983° (~2 km) |
 | Top-left corner | x −600000, y 650000 m | same | lon 6.0, lat 47.5003 |
-| Nodata | −9999 | −9999 | −99999, and exactly 0 |
-| Unit | mm/h, stored directly | not documented | °C, stored directly |
+| Nodata | −9999 | −9999 (0 means under 30%) | −99999, and exactly 0 |
+| Unit | mm/h, stored directly | probability 0–1, shown in % | °C, stored directly |
 
 SRI and POH share the same grid. TEMP uses a different one.
 
@@ -326,10 +333,12 @@ the samples match and the best alignment is with no shift.
 - **SRI**: rain rate in mm/h, no scale or offset, resolution 0.01. `−9999`
   means outside radar coverage or radar unavailable (about half of the grid,
   including open sea and neighbouring countries).
-- **POH**: probability of hail. Only `0` and `−9999` have been observed so
-  far, so whether the scale is 0–1 or 0–100 is **still unknown**. The tool
-  prints the raw value. Contributions from a file recorded during a hailstorm
-  are welcome.
+- **POH**: probability of hail as a fraction from 0 to 1, in steps of 1/254
+  (an 8-bit value rescaled). **Values under 0.30 are set to 0**, so 0 means
+  "under 30%", not "no hail". Verified on the stormiest moments between
+  18 and 25 September 2026: the maximum is exactly 1, the smallest positive
+  value is 0.30, and pixels with POH > 0 have 27–140 mm/h of rain on average.
+  The tool and the API show it in % (0–100).
 - **TEMP**: °C, no scale or offset. `−99999` marks a few missing pixels, and
   **exactly 0 marks sea and areas outside Italy** (about three quarters of the
   grid). The tool treats an exact 0 as no data for this product. A real
@@ -383,7 +392,7 @@ Source: Radar-DPC – Dipartimento della Protezione Civile, CC-BY-SA 4.0.
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 development setup, checks and commit style. Especially useful:
 
-- the scale of POH values, from a file recorded during hail;
+- verification results on days with widespread or convective rain;
 - format notes for other products (VMI, SRT1, CUM*, CAPPI*, …);
 - reports when Radar-DPC changes its API or file format.
 
