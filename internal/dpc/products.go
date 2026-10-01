@@ -23,6 +23,9 @@ type Info struct {
 	// ZeroIsNoData marks products where exactly 0 is a mask (e.g. outside
 	// Italy), not a measurement.
 	ZeroIsNoData bool
+	// ZeroMask, when it matches the grid, refines ZeroIsNoData: an exact 0
+	// is no data only on masked pixels, and a real measurement elsewhere.
+	ZeroMask *Mask
 	// MaxDelay is the longest normal wait between the nominal time of an
 	// instant and its publication, as observed on the API. Zero means
 	// unknown; see Stale.
@@ -40,7 +43,7 @@ var catalog = map[string]Info{
 		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "hail unlikely, under 30%",
 		MaxDelay: 15 * time.Minute},
 	"TEMP": {Type: "TEMP", Description: "air temperature, interpolated from ground stations", Unit: "°C",
-		NoData: []float64{-99999}, ZeroIsNoData: true,
+		NoData: []float64{-99999}, ZeroIsNoData: true, ZeroMask: tempMask,
 		NoDataText: "no data (point at sea or outside Italy)", MaxDelay: 90 * time.Minute},
 }
 
@@ -82,4 +85,14 @@ func (i Info) Display(v float64) float64 {
 		return v
 	}
 	return v * i.Scale
+}
+
+// NoDataAt is IsNoData for pixel (col, row) of grid g. With a zero mask
+// built for g, an exact 0 is no data only where the mask says so: a real
+// 0 °C on land is kept.
+func (i Info) NoDataAt(v float64, col, row int, g Grid) bool {
+	if v == 0 && i.ZeroIsNoData && i.ZeroMask.Matches(g) {
+		return i.ZeroMask.Outside(col, row)
+	}
+	return i.IsNoData(v)
 }

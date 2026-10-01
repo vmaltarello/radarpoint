@@ -126,7 +126,7 @@ func run(ctx context.Context, productType string, lat, lon float64, keep bool) e
 		return fmt.Errorf("reading value: %w", valErr)
 	default:
 		fmt.Fprintf(w, "Pixel:        x=%d, y=%d\n", col, row)
-		fmt.Fprintf(w, "Value:        %s\n", formatValue(info, v))
+		fmt.Fprintf(w, "Value:        %s\n", formatValue(info, v, info.NoDataAt(v, col, row, dpc.Grid{W: g.Width, H: g.Height, OriginX: g.Transform.OriginX, OriginY: g.Transform.OriginY, PixelW: g.Transform.PixelW})))
 	}
 	nd := "none in the file"
 	if len(info.NoData) > 0 {
@@ -149,8 +149,8 @@ func run(ctx context.Context, productType string, lat, lon float64, keep bool) e
 	return nil
 }
 
-func formatValue(info dpc.Info, v float64) string {
-	if info.IsNoData(v) {
+func formatValue(info dpc.Info, v float64, noData bool) string {
+	if noData {
 		return info.NoDataText
 	}
 	v = info.Display(v)

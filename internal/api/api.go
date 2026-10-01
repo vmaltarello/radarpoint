@@ -216,7 +216,7 @@ func (s *Server) read(product string, f *store.Frame, lat, lon float64) Reading 
 	}
 	t := f.Time
 	rd.Time, rd.AgeSeconds, rd.Stale = &t, s.age(t), s.stale(f)
-	v, _, _, err := f.Grid.ValueAt(lat, lon)
+	v, col, row, err := f.Grid.ValueAt(lat, lon)
 	switch {
 	case errors.Is(err, raster.ErrOutside):
 		rd.Status = StatusOutside
@@ -224,7 +224,7 @@ func (s *Server) read(product string, f *store.Frame, lat, lon float64) Reading 
 		// The frame decoded fine when it was downloaded, so a read error
 		// here is a bug rather than a property of the point.
 		rd.Status = StatusNoData
-	case info.IsNoData(v):
+	case info.NoDataAt(v, col, row, gridOf(f.Grid)):
 		rd.Status = StatusNoData
 	default:
 		v = math.Round(info.Display(v)*100) / 100 // stored as float32: 2.0199999 → 2.02
@@ -257,4 +257,9 @@ func cors(h http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		h.ServeHTTP(w, r)
 	})
+}
+
+// gridOf describes the grid of g for the product masks.
+func gridOf(g *raster.GeoTIFF) dpc.Grid {
+	return dpc.Grid{W: g.Width, H: g.Height, OriginX: g.Transform.OriginX, OriginY: g.Transform.OriginY, PixelW: g.Transform.PixelW}
 }
