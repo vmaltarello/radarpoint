@@ -36,6 +36,7 @@ type Nowcast struct {
 	// moved with the rain, since hail falls from the same storm cells.
 	Hail *Field
 
+	options   Options
 	proj      geo.Projection
 	transform geo.GeoTransform
 	pixelKm   float64
@@ -45,19 +46,36 @@ type Nowcast struct {
 // given projection and pixel transform. Pairs further apart than 3 steps are
 // ignored as too unreliable.
 func Compute(frames []Frame, proj geo.Projection, gt geo.GeoTransform, step time.Duration, steps int, o Options) (*Nowcast, error) {
+	return compute(frames, proj, gt, step, steps, o, nil)
+}
+
+// pairKey identifies a frame pair by the times of its two frames.
+type pairKey struct{ prev, next time.Time }
+
+// compute is Compute with an optional cache of per-pair motions: the motion
+// between two frames never changes, so only new pairs are measured.
+func compute(frames []Frame, proj geo.Projection, gt geo.GeoTransform, step time.Duration, steps int, o Options, cache map[pairKey]*PairMotion) (*Nowcast, error) {
 	if len(frames) < 2 {
 		return nil, ErrNotEnoughFrames
 	}
 	sorted := slices.SortedFunc(slices.Values(frames), func(a, b Frame) int { return a.Time.Compare(b.Time) })
-	var pairs []Pair
+	var pms []*PairMotion
 	for i := 1; i < len(sorted); i++ {
 		gap := sorted[i].Time.Sub(sorted[i-1].Time)
 		if gap <= 0 || gap > 3*step {
 			continue
 		}
-		pairs = append(pairs, Pair{Prev: sorted[i-1].Field, Next: sorted[i].Field, Steps: float64(gap) / float64(step)})
+		key := pairKey{sorted[i-1].Time, sorted[i].Time}
+		pm := cache[key]
+		if pm == nil {
+			pm = MeasurePair(Pair{Prev: sorted[i-1].Field, Next: sorted[i].Field, Steps: float64(gap) / float64(step)}, o)
+			if cache != nil {
+				cache[key] = pm
+			}
+		}
+		pms = append(pms, pm)
 	}
-	if len(pairs) == 0 {
+	if len(pms) == 0 {
 		return nil, ErrNotEnoughFrames
 	}
 	latest := sorted[len(sorted)-1]
@@ -67,8 +85,9 @@ func Compute(frames []Frame, proj geo.Projection, gt geo.GeoTransform, step time
 		Steps:     steps,
 		Latest:    latest.Field,
 		Observed:  sorted,
-		Motion:    EstimateMotion(pairs, o),
-		Pairs:     len(pairs),
+		Motion:    CombineMotion(pms, o),
+		Pairs:     len(pms),
+		options:   o,
 		proj:      proj,
 		transform: gt,
 	}
@@ -86,6 +105,9 @@ type Point struct {
 	Lead  time.Duration
 	Value float64
 	Hail  float64
+	// Probability of rain (0–1) near the point; NaN where too little of the
+	// neighbourhood has radar data.
+	Probability float64
 }
 
 // Forecast returns the observation (lead 0) and the forecast for every step
@@ -106,10 +128,11 @@ func (n *Nowcast) Forecast(lat, lon float64) ([]Point, error) {
 		px, py := int(math.Floor(x)), int(math.Floor(y))
 		hail := math.NaN()
 		if n.Hail != nil {
-			hail = float64(n.Hail.At(px, py))
+			hail = float64(n.valueAt(n.Hail, px, py, k))
 		}
 		d := time.Duration(k) * n.Step
-		out = append(out, Point{Time: n.Base.Add(d), Lead: d, Value: float64(n.Latest.At(px, py)), Hail: hail})
+		out = append(out, Point{Time: n.Base.Add(d), Lead: d, Value: float64(n.valueAt(n.Latest, px, py, k)), Hail: hail,
+			Probability: n.probAt(px, py, n.probRadius(k))})
 	}
 	return out, nil
 }
@@ -145,6 +168,15 @@ func (n *Nowcast) ForecastFields(src *Field, steps int) []*Field {
 	for k := range out {
 		out[k] = &Field{W: w, H: h, V: make([]float32, w*h)}
 	}
+	// With lead-time smoothing, sample a blurred copy per step: the same
+	// values as valueAt, computed for the whole grid at once.
+	srcs := make([]*Field, steps)
+	for k := range srcs {
+		srcs[k] = src
+		if s := n.sigma(k + 1); s > 0 {
+			srcs[k] = blur(src, s)
+		}
+	}
 	var wg sync.WaitGroup
 	rows := make(chan int, h)
 	for row := range h {
@@ -158,7 +190,7 @@ func (n *Nowcast) ForecastFields(src *Field, steps int) []*Field {
 					x, y := float64(col)+0.5, float64(row)+0.5
 					for k := range steps {
 						x, y = n.stepBack(x, y)
-						out[k].V[row*w+col] = src.At(int(math.Floor(x)), int(math.Floor(y)))
+						out[k].V[row*w+col] = srcs[k].At(int(math.Floor(x)), int(math.Floor(y)))
 					}
 				}
 			}
@@ -187,3 +219,15 @@ func (n *Nowcast) stepBack(x, y float64) (float64, float64) {
 // Projection and Transform describe the grid the nowcast is computed on.
 func (n *Nowcast) Projection() geo.Projection  { return n.proj }
 func (n *Nowcast) Transform() geo.GeoTransform { return n.transform }
+
+// sigma is the smoothing at step k, in pixels; 0 means none.
+func (n *Nowcast) sigma(k int) float64 { return n.options.SmoothPerStep * float64(k) }
+
+// valueAt reads f at pixel (x, y) for step k, smoothed as the lead time
+// requires.
+func (n *Nowcast) valueAt(f *Field, x, y, k int) float32 {
+	if s := n.sigma(k); s > 0 {
+		return smoothAt(f, x, y, s)
+	}
+	return f.At(x, y)
+}

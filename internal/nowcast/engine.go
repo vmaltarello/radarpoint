@@ -19,7 +19,8 @@ type Engine struct {
 
 	mu       sync.Mutex // serialises Update and SetHail
 	fields   map[time.Time]*Field
-	hail     *Field // latest hail field and its time
+	pairs    map[pairKey]*PairMotion // motion of frame pairs already measured
+	hail     *Field                  // latest hail field and its time
 	hailTime time.Time
 	current  atomic.Pointer[Nowcast]
 }
@@ -58,7 +59,15 @@ func (e *Engine) Update(frames []*store.Frame) (*Nowcast, error) {
 		}
 	}
 	latest := frames[len(frames)-1]
-	n, err := Compute(in, latest.Grid.Projection, latest.Grid.Transform, latest.Period, e.Steps, e.Options)
+	if e.pairs == nil {
+		e.pairs = map[pairKey]*PairMotion{}
+	}
+	for k := range e.pairs {
+		if !keep[k.prev] || !keep[k.next] {
+			delete(e.pairs, k)
+		}
+	}
+	n, err := compute(in, latest.Grid.Projection, latest.Grid.Transform, latest.Period, e.Steps, e.Options, e.pairs)
 	if err != nil {
 		return nil, err
 	}

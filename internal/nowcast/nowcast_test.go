@@ -200,3 +200,106 @@ func TestForecastFieldsMatchPointForecast(t *testing.T) {
 		}
 	}
 }
+
+func TestSmoothedForecastFieldsMatchPoints(t *testing.T) {
+	const w, h = 160, 160
+	fr := frames(randomBlobs(25, w, h), w, h, 3, 2, 1)
+	o := DefaultOptions
+	o.SmoothPerStep = 0.8
+	n, err := Compute(fr, tm, gt, step, 4, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := n.ForecastFields(n.Latest, 4)
+	for _, p := range [][2]int{{40, 60}, {100, 30}, {12, 80}} {
+		lat, lon := tm.Inverse(gt.Center(p[0], p[1]))
+		pts, _ := n.Forecast(lat, lon)
+		for k := 1; k <= 4; k++ {
+			a, b := float64(fields[k-1].At(p[0], p[1])), pts[k].Value
+			if math.Abs(a-b) > 1e-4 && !(math.IsNaN(a) && math.IsNaN(b)) {
+				t.Errorf("pixel %v step %d: field %v, point %v", p, k, a, b)
+			}
+		}
+	}
+}
+
+func TestSmoothingSpreadsAndKeepsMass(t *testing.T) {
+	f := &Field{W: 21, H: 21, V: make([]float32, 21*21)}
+	f.V[10*21+10] = 100 // one wet pixel
+	b := blur(f, 2)
+	if c := b.At(10, 10); c <= 0 || c >= 100 {
+		t.Errorf("centre %v, want spread below 100", c)
+	}
+	var sum float32
+	for _, v := range b.V {
+		sum += v
+	}
+	if math.Abs(float64(sum)-100) > 1 {
+		t.Errorf("total %v, want about 100", sum)
+	}
+	if a, p := b.At(13, 9), smoothAt(f, 13, 9, 2); math.Abs(float64(a-p)) > 1e-5 {
+		t.Errorf("blur %v vs smoothAt %v", a, p)
+	}
+	// Mostly no data around: undefined rather than invented.
+	g := &Field{W: 21, H: 21, V: make([]float32, 21*21)}
+	for i := range g.V {
+		g.V[i] = float32(math.NaN())
+	}
+	g.V[0] = 5
+	if v := smoothAt(g, 10, 10, 2); v == v {
+		t.Errorf("smoothAt with no data = %v, want NaN", v)
+	}
+}
+
+func TestCombineRobustAndRecency(t *testing.T) {
+	pm := func(u float64) *PairMotion {
+		return &PairMotion{NX: 1, NY: 1, U: []float64{u}, V: []float64{0}, OK: []bool{true}}
+	}
+	pms := []*PairMotion{pm(2), pm(2.2), pm(30)} // one bad match, the newest
+	o := DefaultOptions
+	if m := CombineMotion(pms, o); math.Abs(m.U[0]-11.4) > 1e-9 {
+		t.Errorf("mean = %v, want 11.4", m.U[0])
+	}
+	o.Robust = true
+	if m := CombineMotion(pms, o); m.U[0] != 2.2 {
+		t.Errorf("median = %v, want 2.2", m.U[0])
+	}
+	// With strong recency the newest pair dominates even the median.
+	o.RecencyDecay = 0.3
+	if m := CombineMotion(pms, o); m.U[0] != 30 {
+		t.Errorf("recency-weighted median = %v, want 30", m.U[0])
+	}
+}
+
+func TestProbability(t *testing.T) {
+	// Left half wet, right half dry, still rain: the probability at the
+	// border is about one half, and grid and point agree.
+	const w, h = 60, 60
+	f := &Field{W: w, H: h, V: make([]float32, w*h)}
+	for y := range h {
+		for x := range w / 2 {
+			f.V[y*w+x] = 3
+		}
+	}
+	fr := []Frame{{base, f}, {base.Add(step), f}}
+	n, err := Compute(fr, tm, gt, step, 3, DefaultOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lat, lon := tm.Inverse(gt.Center(30, 30))
+	pts, _ := n.Forecast(lat, lon)
+	// Radius 2 at lead 0: 2 wet columns (28, 29) of 5.
+	if math.Abs(pts[0].Probability-0.4) > 1e-9 {
+		t.Errorf("lead 0 probability %v, want 0.4", pts[0].Probability)
+	}
+	fields := n.ProbabilityFields(3)
+	for k := 1; k <= 3; k++ {
+		if a, b := float64(fields[k-1].At(30, 30)), pts[k].Probability; math.Abs(a-b) > 1e-6 {
+			t.Errorf("step %d: field %v, point %v", k, a, b)
+		}
+	}
+	lat, lon = tm.Inverse(gt.Center(5, 30))
+	if p, _ := n.Forecast(lat, lon); p[3].Probability != 1 {
+		t.Errorf("deep in the rain: %v, want 1", p[3].Probability)
+	}
+}

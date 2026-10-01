@@ -26,7 +26,9 @@ func engineFrames(t *testing.T) (sri []*store.Frame, hail *store.Frame) {
 
 func newEngine() *Engine {
 	nd := func(v float64) bool { return v == -9999 }
-	return &Engine{Steps: 3, Options: DefaultOptions, IsNoData: nd, HailIsNoData: nd}
+	o := DefaultOptions
+	o.SmoothPerStep = 0 // follow values unchanged; smoothing has its own tests
+	return &Engine{Steps: 3, Options: o, IsNoData: nd, HailIsNoData: nd}
 }
 
 // rainy is a pixel of sri_crop.tif with 2.02 mm/h.
@@ -81,5 +83,33 @@ func TestEngineNeedsTwoFrames(t *testing.T) {
 	sri, _ := engineFrames(t)
 	if _, err := newEngine().Update(sri[:1]); err != ErrNotEnoughFrames {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEngineCachesPairs(t *testing.T) {
+	sri, _ := engineFrames(t)
+	e := newEngine()
+	if _, err := e.Update(sri); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.pairs) != 1 {
+		t.Fatalf("%d cached pairs, want 1", len(e.pairs))
+	}
+	cached := e.pairs[pairKey{sri[0].Time, sri[1].Time}]
+	// A new frame: the old pair is reused, only the new one is measured.
+	third := *sri[1]
+	third.Time = sri[1].Time.Add(step)
+	if _, err := e.Update([]*store.Frame{sri[0], sri[1], &third}); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.pairs) != 2 || e.pairs[pairKey{sri[0].Time, sri[1].Time}] != cached {
+		t.Fatalf("pairs %d, old pair reused: %v", len(e.pairs), e.pairs[pairKey{sri[0].Time, sri[1].Time}] == cached)
+	}
+	// The oldest frame leaves the window: its pair is dropped.
+	if _, err := e.Update([]*store.Frame{sri[1], &third}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.pairs[pairKey{sri[0].Time, sri[1].Time}]; ok || len(e.pairs) != 1 {
+		t.Fatalf("stale pair kept: %d pairs", len(e.pairs))
 	}
 }

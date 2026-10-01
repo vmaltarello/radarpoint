@@ -20,7 +20,10 @@ func nowcastServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	sri, _ := dpc.Lookup("SRI")
-	e := &nowcast.Engine{Steps: 12, Options: nowcast.DefaultOptions, IsNoData: sri.IsNoData}
+	// No smoothing: these tests follow values through the API unchanged.
+	o := nowcast.DefaultOptions
+	o.SmoothPerStep = 0
+	e := &nowcast.Engine{Steps: 12, Options: o, IsNoData: sri.IsNoData}
 	frames := []*store.Frame{
 		{Product: "SRI", Time: t0.Add(-5 * time.Minute), Period: 5 * time.Minute, Grid: g},
 		{Product: "SRI", Time: t0, Period: 5 * time.Minute, Grid: g},
@@ -48,6 +51,11 @@ func TestNowcast(t *testing.T) {
 	for _, st := range b.Steps {
 		if st.Status != StatusOK || st.Value == nil || *st.Value != 2.02 {
 			t.Errorf("step +%d: %s %v", st.LeadMinutes, st.Status, deref(st.Value))
+		}
+	}
+	for _, st := range b.Steps {
+		if st.RainProbability == nil || *st.RainProbability <= 0 || *st.RainProbability > 100 {
+			t.Errorf("step +%d rain_probability %v, want a percentage above 0 in the rain", st.LeadMinutes, deref(st.RainProbability))
 		}
 	}
 	if b.Steps[0].HailPercent != nil {

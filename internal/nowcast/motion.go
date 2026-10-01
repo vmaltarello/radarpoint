@@ -1,6 +1,7 @@
 package nowcast
 
 import (
+	"cmp"
 	"math"
 	"runtime"
 	"slices"
@@ -26,17 +27,45 @@ type Options struct {
 	// Cap limits rain rates during matching, so a few intense cores do not
 	// dominate the comparison.
 	Cap float32
+
+	// Robust combines the motion of the frame pairs with a weighted median
+	// instead of a weighted mean, so one bad match does not drag a block.
+	Robust bool
+	// RecencyDecay weighs frame pairs by age: the newest has weight 1, the
+	// one before RecencyDecay, then RecencyDecay², and so on. 1 weighs all
+	// pairs equally.
+	RecencyDecay float64
+
+	// SmoothPerStep is the standard deviation, in pixels, of a Gaussian
+	// smoothing applied to the forecast, growing by this much at each step:
+	// small cells are not predictable for long, so the forecast blurs them
+	// as lead time grows. 0 disables it.
+	SmoothPerStep float64
+
+	// The probability of rain (≥ ProbThreshold mm/h) is the share of rain
+	// pixels in a square of half side ProbRadius + ProbRadiusPerStep × step
+	// pixels around the place the rain comes from.
+	ProbThreshold     float32
+	ProbRadius        float64
+	ProbRadiusPerStep float64
 }
 
 // DefaultOptions suit Radar-DPC SRI: 2 km matching cells, 48 km blocks, up
-// to 144 km/h.
+// to 144 km/h. Smoothing and probability radius were chosen with
+// cmd/nowcastverify over 20 cases (see README): robust combination and
+// recency weights made no measurable difference and are off.
 var DefaultOptions = Options{
-	Factor:          2,
-	Block:           48,
-	MaxShift:        12,
-	RainThreshold:   0.2,
-	MinRainFraction: 0.05,
-	Cap:             30,
+	Factor:            2,
+	Block:             48,
+	MaxShift:          12,
+	RainThreshold:     0.2,
+	MinRainFraction:   0.05,
+	Cap:               30,
+	RecencyDecay:      1,
+	SmoothPerStep:     0.75,
+	ProbThreshold:     0.2,
+	ProbRadius:        2,
+	ProbRadiusPerStep: 2,
 }
 
 // Motion is a field of displacement vectors, one per block, in pixels of the
@@ -55,66 +84,108 @@ type Pair struct {
 	Steps      float64
 }
 
-// EstimateMotion measures the motion between each pair and averages the
-// results per block. Blocks without enough rain in any pair get the median
-// of the measured vectors; the field is then smoothed. With no measurable
-// block at all the motion is zero and Measured is 0.
-func EstimateMotion(pairs []Pair, o Options) *Motion {
-	if len(pairs) == 0 {
-		return nil
-	}
-	w, h := pairs[0].Next.W, pairs[0].Next.H
-	m := &Motion{Block: o.Block, NX: (w + o.Block - 1) / o.Block, NY: (h + o.Block - 1) / o.Block}
-	n := m.NX * m.NY
-	sumU, sumV, count := make([]float64, n), make([]float64, n), make([]int, n)
+// PairMotion is the motion measured between the two frames of a pair, per
+// block, in pixels of the original grid per time step.
+type PairMotion struct {
+	NX, NY int
+	U, V   []float64
+	OK     []bool // the block had enough rain to be measured
+}
 
-	for _, p := range pairs {
-		prev, next := p.Prev.downsample(o.Factor), p.Next.downsample(o.Factor)
-		cb := o.Block / o.Factor
-		f := float64(o.Factor) / p.Steps
-		// Blocks are independent: spread the rows of blocks over the CPUs.
-		// Each block index is written by exactly one goroutine.
-		var wg sync.WaitGroup
-		rows := make(chan int)
-		for range runtime.GOMAXPROCS(0) {
-			wg.Go(func() {
-				for by := range rows {
-					for bx := 0; bx < m.NX; bx++ {
-						dx, dy, ok := matchBlock(prev, next, bx*cb, by*cb, cb, o.MaxShift/o.Factor, o)
-						if !ok {
-							continue
-						}
-						i := by*m.NX + bx
-						sumU[i] += dx * f
-						sumV[i] += dy * f
-						count[i]++
+// MeasurePair runs the block matching on one pair of frames.
+func MeasurePair(p Pair, o Options) *PairMotion {
+	w, h := p.Next.W, p.Next.H
+	pm := &PairMotion{NX: (w + o.Block - 1) / o.Block, NY: (h + o.Block - 1) / o.Block}
+	n := pm.NX * pm.NY
+	pm.U, pm.V, pm.OK = make([]float64, n), make([]float64, n), make([]bool, n)
+	prev, next := p.Prev.downsample(o.Factor), p.Next.downsample(o.Factor)
+	cb := o.Block / o.Factor
+	f := float64(o.Factor) / p.Steps
+	// Blocks are independent: spread the rows of blocks over the CPUs.
+	// Each block index is written by exactly one goroutine.
+	var wg sync.WaitGroup
+	rows := make(chan int)
+	for range runtime.GOMAXPROCS(0) {
+		wg.Go(func() {
+			for by := range rows {
+				for bx := 0; bx < pm.NX; bx++ {
+					dx, dy, ok := matchBlock(prev, next, bx*cb, by*cb, cb, o.MaxShift/o.Factor, o)
+					if ok {
+						i := by*pm.NX + bx
+						pm.U[i], pm.V[i], pm.OK[i] = dx*f, dy*f, true
 					}
 				}
-			})
-		}
-		for by := 0; by < m.NY; by++ {
-			rows <- by
-		}
-		close(rows)
-		wg.Wait()
+			}
+		})
+	}
+	for by := 0; by < pm.NY; by++ {
+		rows <- by
+	}
+	close(rows)
+	wg.Wait()
+	return pm
+}
+
+// EstimateMotion measures the motion between each pair (oldest first) and
+// combines the results per block.
+func EstimateMotion(pairs []Pair, o Options) *Motion {
+	pms := make([]*PairMotion, len(pairs))
+	for i, p := range pairs {
+		pms[i] = MeasurePair(p, o)
+	}
+	return CombineMotion(pms, o)
+}
+
+// CombineMotion merges per-pair motions (oldest first) into one field: per
+// block, a weighted mean or median (Options.Robust) of the measured
+// vectors, newer pairs weighing more (Options.RecencyDecay). Blocks never
+// measured get the median of the others; the field is then smoothed. With
+// no measurable block at all the motion is zero and Measured is 0.
+func CombineMotion(pms []*PairMotion, o Options) *Motion {
+	if len(pms) == 0 {
+		return nil
+	}
+	m := &Motion{Block: o.Block, NX: pms[0].NX, NY: pms[0].NY}
+	n := m.NX * m.NY
+	weights := make([]float64, len(pms))
+	decay := o.RecencyDecay
+	if decay <= 0 {
+		decay = 1
+	}
+	for i := range pms {
+		weights[i] = math.Pow(decay, float64(len(pms)-1-i))
 	}
 
 	m.U, m.V = make([]float64, n), make([]float64, n)
-	var us, vs []float64
-	for i := range n {
-		if count[i] > 0 {
-			m.U[i], m.V[i] = sumU[i]/float64(count[i]), sumV[i]/float64(count[i])
-			us, vs = append(us, m.U[i]), append(vs, m.V[i])
+	measured := make([]bool, n)
+	var us, vs, ws []float64
+	var allU, allV []float64
+	for b := range n {
+		us, vs, ws = us[:0], vs[:0], ws[:0]
+		for i, pm := range pms {
+			if pm.OK[b] {
+				us, vs, ws = append(us, pm.U[b]), append(vs, pm.V[b]), append(ws, weights[i])
+			}
 		}
+		if len(us) == 0 {
+			continue
+		}
+		if o.Robust {
+			m.U[b], m.V[b] = weightedMedian(us, ws), weightedMedian(vs, ws)
+		} else {
+			m.U[b], m.V[b] = weightedMean(us, ws), weightedMean(vs, ws)
+		}
+		measured[b] = true
+		allU, allV = append(allU, m.U[b]), append(allV, m.V[b])
 	}
-	m.Measured = len(us)
+	m.Measured = len(allU)
 	if m.Measured == 0 {
 		return m
 	}
-	mu, mv := median(us), median(vs)
-	for i := range n {
-		if count[i] == 0 {
-			m.U[i], m.V[i] = mu, mv
+	mu, mv := median(allU), median(allV)
+	for b := range n {
+		if !measured[b] {
+			m.U[b], m.V[b] = mu, mv
 		}
 	}
 	m.smooth()
@@ -244,6 +315,37 @@ func (m *Motion) At(x, y float64) (u, v float64) {
 		return top*(1-ty) + bot*ty
 	}
 	return lerp(m.U), lerp(m.V)
+}
+
+func weightedMean(x, w []float64) float64 {
+	var s, sw float64
+	for i := range x {
+		s += x[i] * w[i]
+		sw += w[i]
+	}
+	return s / sw
+}
+
+// weightedMedian returns the value where the cumulative weight of the
+// sorted values reaches half of the total.
+func weightedMedian(x, w []float64) float64 {
+	idx := make([]int, len(x))
+	for i := range idx {
+		idx[i] = i
+	}
+	slices.SortFunc(idx, func(a, b int) int { return cmp.Compare(x[a], x[b]) })
+	var total float64
+	for _, v := range w {
+		total += v
+	}
+	var acc float64
+	for _, i := range idx {
+		acc += w[i]
+		if acc >= total/2 {
+			return x[i]
+		}
+	}
+	return x[idx[len(idx)-1]]
 }
 
 func median(s []float64) float64 {

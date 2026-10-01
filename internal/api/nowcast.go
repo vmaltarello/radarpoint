@@ -37,11 +37,12 @@ type Motion struct {
 
 // NowcastStep is the forecast at one lead time.
 type NowcastStep struct {
-	Time        time.Time `json:"time"`
-	LeadMinutes int       `json:"lead_minutes"`
-	Status      string    `json:"status" enum:"ok,nodata" doc:"nodata: the rain would come from outside radar coverage"`
-	Value       *float64  `json:"value" doc:"Rain rate; null unless status is ok"`
-	HailPercent *float64  `json:"hail_percent" doc:"Probability of hail in %; 0 means under 30%. Null when unknown: status not ok, or POH not followed or not yet matched to this forecast"`
+	Time            time.Time `json:"time"`
+	LeadMinutes     int       `json:"lead_minutes"`
+	Status          string    `json:"status" enum:"ok,nodata" doc:"nodata: the rain would come from outside radar coverage"`
+	Value           *float64  `json:"value" doc:"Rain rate; null unless status is ok"`
+	HailPercent     *float64  `json:"hail_percent" doc:"Probability of hail in %; 0 means under 30%. Null when unknown: status not ok, or POH not followed or not yet matched to this forecast"`
+	RainProbability *float64  `json:"rain_probability" doc:"Probability of rain (≥ 0.2 mm/h) in %, over a neighbourhood that grows with lead time; null where too little of it has radar data"`
 }
 
 // NowcastBody is the response of /nowcast.
@@ -98,6 +99,10 @@ func (s *Server) nowcast(_ context.Context, in *PointParams) (*nowcastOutput, er
 	}
 	for _, p := range pts {
 		st := NowcastStep{Time: p.Time, LeadMinutes: int(p.Lead.Minutes()), Status: StatusNoData}
+		if !math.IsNaN(p.Probability) {
+			pr := math.Round(p.Probability * 100)
+			st.RainProbability = &pr
+		}
 		if !math.IsNaN(p.Value) {
 			v := math.Round(p.Value*100) / 100
 			st.Status, st.Value = StatusOK, &v
