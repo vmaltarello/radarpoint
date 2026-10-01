@@ -8,7 +8,7 @@ import (
 )
 
 // ErrOutside is returned when a point falls outside the raster extent.
-var ErrOutside = errors.New("punto fuori dall'area coperta dal prodotto")
+var ErrOutside = errors.New("point outside the area covered by the product")
 
 // GeoTIFF is a single-band TIFF with its georeference decoded.
 type GeoTIFF struct {
@@ -52,7 +52,7 @@ func ellipsoid(k GeoKeys) (geo.Ellipsoid, error) {
 	case 4326:
 		return geo.WGS84, nil
 	default:
-		return geo.Ellipsoid{}, fmt.Errorf("datum geografico EPSG:%d non supportato", gt)
+		return geo.Ellipsoid{}, fmt.Errorf("geographic datum EPSG:%d not supported", gt)
 	}
 }
 
@@ -64,15 +64,15 @@ func projection(k GeoKeys) (geo.Projection, error) {
 	switch mt := k.Int(KeyGTModelType, 0); mt {
 	case 2: // geographic
 		if !ell.Near(geo.WGS84) {
-			return nil, errors.New("sistema geografico non WGS84 non supportato")
+			return nil, errors.New("geographic system other than WGS84 not supported")
 		}
 		return geo.Geographic{Ellipsoid: ell}, nil
 	case 1: // projected
 		if pcs := k.Int(KeyProjectedCSType, 32767); pcs != 32767 {
-			return nil, fmt.Errorf("sistema proiettato EPSG:%d non supportato", pcs)
+			return nil, fmt.Errorf("projected system EPSG:%d not supported", pcs)
 		}
 		if u := k.Int(KeyProjLinearUnits, 9001); u != 9001 {
-			return nil, fmt.Errorf("unità lineare EPSG:%d non supportata (solo metri)", u)
+			return nil, fmt.Errorf("linear unit EPSG:%d not supported (metres only)", u)
 		}
 		switch ct := k.Int(KeyProjCoordTrans, 0); ct {
 		case 1:
@@ -85,24 +85,24 @@ func projection(k GeoKeys) (geo.Projection, error) {
 				Ellipsoid: ell,
 			}, nil
 		default:
-			return nil, fmt.Errorf("trasformazione di coordinate GeoTIFF %d non supportata", ct)
+			return nil, fmt.Errorf("GeoTIFF coordinate transformation %d not supported", ct)
 		}
 	default:
-		return nil, fmt.Errorf("GTModelType %d non supportato", mt)
+		return nil, fmt.Errorf("GTModelType %d not supported", mt)
 	}
 }
 
 func transform(im *Image, k GeoKeys) (geo.GeoTransform, error) {
 	if _, ok := im.Tags[TagModelTransformation]; ok {
-		return geo.GeoTransform{}, errors.New("ModelTransformationTag non supportato")
+		return geo.GeoTransform{}, errors.New("ModelTransformationTag not supported")
 	}
 	sc, tp := im.Tags[TagModelPixelScale], im.Tags[TagModelTiepoint]
 	if sc == nil || tp == nil || len(sc.Floats) < 2 || len(tp.Floats) < 6 {
-		return geo.GeoTransform{}, errors.New("georeferenziazione assente (ModelPixelScale/ModelTiepoint)")
+		return geo.GeoTransform{}, errors.New("no georeference (ModelPixelScale/ModelTiepoint)")
 	}
 	gt := geo.GeoTransform{PixelW: sc.Floats[0], PixelH: sc.Floats[1]}
 	if gt.PixelW <= 0 || gt.PixelH <= 0 {
-		return geo.GeoTransform{}, errors.New("dimensione pixel non valida")
+		return geo.GeoTransform{}, errors.New("invalid pixel size")
 	}
 	i, j, x, y := tp.Floats[0], tp.Floats[1], tp.Floats[3], tp.Floats[4]
 	if k.Int(KeyGTRasterType, 1) == 2 { // PixelIsPoint: tiepoint is a pixel centre
@@ -161,7 +161,7 @@ func (im *Image) DataType() string {
 func (im *Image) CompressionName() string {
 	switch im.Compression {
 	case CompressionNone:
-		return "nessuna"
+		return "none"
 	case CompressionLZW:
 		return "LZW"
 	default:

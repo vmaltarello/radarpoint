@@ -21,16 +21,16 @@ type Info struct {
 	ZeroIsNoData bool
 }
 
-const radarNoData = "nessun dato (radar non disponibile in questa zona)"
+const radarNoData = "no data (radar not available at this point)"
 
 var catalog = map[string]Info{
-	"SRI": {Type: "SRI", Description: "intensità di pioggia al suolo", Unit: "mm/h",
-		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "nessuna pioggia"},
-	"POH": {Type: "POH", Description: "probabilità di grandine",
-		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "nessuna grandine"},
-	"TEMP": {Type: "TEMP", Description: "temperatura dell'aria, rete a terra interpolata", Unit: "°C",
+	"SRI": {Type: "SRI", Description: "rain rate at ground level", Unit: "mm/h",
+		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no rain"},
+	"POH": {Type: "POH", Description: "probability of hail",
+		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no hail"},
+	"TEMP": {Type: "TEMP", Description: "air temperature, interpolated from ground stations", Unit: "°C",
 		NoData: []float64{-99999}, ZeroIsNoData: true,
-		NoDataText: "nessun dato (punto fuori dal territorio nazionale o in mare)"},
+		NoDataText: "no data (point at sea or outside Italy)"},
 }
 
 // Lookup returns the known interpretation of a product type. Unknown types
@@ -40,7 +40,7 @@ func Lookup(productType string) (Info, bool) {
 	if i, ok := catalog[t]; ok {
 		return i, true
 	}
-	return Info{Type: t, NoData: []float64{-9999, -99999}, NoDataText: "nessun dato"}, false
+	return Info{Type: t, NoData: []float64{-9999, -99999}, NoDataText: "no data"}, false
 }
 
 // IsNoData reports whether v is a nodata sentinel (or NaN) for this product.

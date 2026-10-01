@@ -25,7 +25,7 @@ const (
 )
 
 // ErrNotFound is returned (wrapped in *APIError) when the API answers 404.
-var ErrNotFound = errors.New("prodotto non trovato")
+var ErrNotFound = errors.New("product not found")
 
 // APIError is a non-2xx answer from the API.
 type APIError struct {
@@ -35,9 +35,9 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	if e.Message != "" {
-		return fmt.Sprintf("API Radar-DPC: HTTP %d: %s", e.Status, e.Message)
+		return fmt.Sprintf("Radar-DPC API: HTTP %d: %s", e.Status, e.Message)
 	}
-	return fmt.Sprintf("API Radar-DPC: HTTP %d", e.Status)
+	return fmt.Sprintf("Radar-DPC API: HTTP %d", e.Status)
 }
 
 func (e *APIError) Is(target error) bool {
@@ -100,7 +100,7 @@ func (c *Client) FindLast(ctx context.Context, productType string) (Product, err
 			return Product{Type: p.ProductType, Time: time.UnixMilli(p.Time).UTC(), Period: p.Period}, nil
 		}
 	}
-	return Product{}, &APIError{Status: http.StatusNotFound, Message: "nessun prodotto " + productType + " nella risposta"}
+	return Product{}, &APIError{Status: http.StatusNotFound, Message: "no " + productType + " product in the response"}
 }
 
 // DownloadURL asks for a pre-signed URL of the product at time t. The API
@@ -117,7 +117,7 @@ func (c *Client) DownloadURL(ctx context.Context, productType string, t time.Tim
 		return Download{}, err
 	}
 	if out.URL == "" {
-		return Download{}, errors.New("API Radar-DPC: risposta senza url")
+		return Download{}, errors.New("Radar-DPC API: response without url")
 	}
 	return Download{Bucket: out.Bucket, Key: out.Key, URL: out.URL, Expires: time.Duration(out.ExpiresSeconds) * time.Second}, nil
 }
@@ -185,7 +185,7 @@ func (c *Client) do(ctx context.Context, method, url string, body []byte, out an
 			return retriable(resp.StatusCode), &APIError{Status: resp.StatusCode, Message: msg}
 		}
 		if err := json.Unmarshal(data, out); err != nil {
-			return false, fmt.Errorf("API Radar-DPC: risposta non valida: %w", err)
+			return false, fmt.Errorf("Radar-DPC API: invalid response: %w", err)
 		}
 		return false, nil
 	})

@@ -24,10 +24,10 @@ import (
 const userAgent = "radarpoint-prototype/0.1 (+https://github.com/vmaltarello/radarpoint)"
 
 func main() {
-	product := flag.String("product", "SRI", "tipo di prodotto Radar-DPC (SRI, POH, TEMP, …)")
-	lat := flag.Float64("lat", 0, "latitudine WGS84 in gradi decimali")
-	lon := flag.Float64("lon", 0, "longitudine WGS84 in gradi decimali")
-	keep := flag.Bool("keep", false, "conserva il file .tif scaricato nella directory corrente")
+	product := flag.String("product", "SRI", "Radar-DPC product type (SRI, POH, TEMP, …)")
+	lat := flag.Float64("lat", 0, "WGS84 latitude in decimal degrees")
+	lon := flag.Float64("lon", 0, "WGS84 longitude in decimal degrees")
+	keep := flag.Bool("keep", false, "keep the downloaded .tif in the current directory")
 	flag.Parse()
 
 	latSet, lonSet := false, false
@@ -36,17 +36,17 @@ func main() {
 		lonSet = lonSet || f.Name == "lon"
 	})
 	if !latSet || !lonSet {
-		fail(2, "servono --lat e --lon")
+		fail(2, "--lat and --lon are required")
 	}
 	if *lat < -90 || *lat > 90 || *lon < -180 || *lon > 180 {
-		fail(2, "coordinate non valide: %g, %g", *lat, *lon)
+		fail(2, "invalid coordinates: %g, %g", *lat, *lon)
 	}
 	pt := strings.ToUpper(*product)
 	if !slices.Contains(dpc.ValidTypes, pt) {
-		fail(2, "prodotto %q non valido; validi: %s", *product, strings.Join(dpc.ValidTypes, ", "))
+		fail(2, "invalid product %q; valid: %s", *product, strings.Join(dpc.ValidTypes, ", "))
 	}
 	if pt == "SITES" {
-		fail(2, "SITES è un GeoJSON di siti radar, non un raster")
+		fail(2, "SITES is a GeoJSON of radar sites, not a raster")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -92,7 +92,7 @@ func run(ctx context.Context, productType string, lat, lon float64, keep bool) e
 	t0 = time.Now()
 	g, err := raster.OpenGeoTIFF(f.Name())
 	if err != nil {
-		return fmt.Errorf("lettura GeoTIFF: %w", err)
+		return fmt.Errorf("reading GeoTIFF: %w", err)
 	}
 	v, col, row, valErr := g.ValueAt(lat, lon)
 	tRead := time.Since(t0)
@@ -101,48 +101,48 @@ func run(ctx context.Context, productType string, lat, lon float64, keep bool) e
 	if keep {
 		keptAs = productType + "_" + path.Base(dl.Key) // e.g. SRI_01-10-2026-12-35.tif
 		if err := moveFile(f.Name(), keptAs); err != nil {
-			return fmt.Errorf("salvataggio %s: %w", keptAs, err)
+			return fmt.Errorf("saving %s: %w", keptAs, err)
 		}
 	}
 
 	info, _ := dpc.Lookup(productType)
 	rome, _ := time.LoadLocation("Europe/Rome")
 	w := os.Stdout
-	fmt.Fprintf(w, "Prodotto:      %s", p.Type)
+	fmt.Fprintf(w, "Product:      %s", p.Type)
 	if info.Description != "" {
 		fmt.Fprintf(w, " (%s)", info.Description)
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Orario dato:   %s UTC (%s ora italiana), periodo %s\n",
+	fmt.Fprintf(w, "Data time:    %s UTC (%s Italian time), period %s\n",
 		p.Time.Format("2006-01-02 15:04"), p.Time.In(rome).Format("15:04"), p.Period)
-	fmt.Fprintf(w, "Punto:         %.4f, %.4f\n", lat, lon)
+	fmt.Fprintf(w, "Point:        %.4f, %.4f\n", lat, lon)
 	switch {
 	case errors.Is(valErr, raster.ErrOutside):
 		b := g.Bounds()
-		fmt.Fprintf(w, "Pixel:         x=%d, y=%d (fuori dal raster %dx%d)\n", col, row, g.Width, g.Height)
-		fmt.Fprintf(w, "Valore:        ERRORE: %v (area lat %.2f…%.2f, lon %.2f…%.2f circa)\n", valErr,
+		fmt.Fprintf(w, "Pixel:        x=%d, y=%d (outside the %dx%d raster)\n", col, row, g.Width, g.Height)
+		fmt.Fprintf(w, "Value:        ERROR: %v (area roughly lat %.2f…%.2f, lon %.2f…%.2f)\n", valErr,
 			min(b[2][0], b[3][0]), max(b[0][0], b[1][0]), min(b[0][1], b[3][1]), max(b[1][1], b[2][1]))
 	case valErr != nil:
-		return fmt.Errorf("lettura valore: %w", valErr)
+		return fmt.Errorf("reading value: %w", valErr)
 	default:
-		fmt.Fprintf(w, "Pixel:         x=%d, y=%d\n", col, row)
-		fmt.Fprintf(w, "Valore:        %s\n", formatValue(info, v))
+		fmt.Fprintf(w, "Pixel:        x=%d, y=%d\n", col, row)
+		fmt.Fprintf(w, "Value:        %s\n", formatValue(info, v))
 	}
-	nd := "nessuno nel file"
+	nd := "none in the file"
 	if len(info.NoData) > 0 {
-		nd = fmt.Sprintf("%g (dedotto, non dichiarato nel file)", info.NoData[0])
+		nd = fmt.Sprintf("%g (inferred, not declared in the file)", info.NoData[0])
 	}
 	if v, ok := g.NoData(); ok {
 		nd = strconv.FormatFloat(v, 'g', -1, 64)
 	}
-	fmt.Fprintf(w, "File:          %s, %dx%d px, 1 banda %s, %s, nodata=%s\n",
+	fmt.Fprintf(w, "File:         %s, %dx%d px, 1 band %s, %s, nodata=%s\n",
 		humanSize(size), g.Width, g.Height, g.DataType(), g.CompressionName(), nd)
-	fmt.Fprintf(w, "Proiezione:    %s, pixel %.6g x %.6g\n", g.Projection, g.Transform.PixelW, g.Transform.PixelH)
-	fmt.Fprintf(w, "Tempi:         API %s, download %s, lettura %s\n", ms(tAPI), ms(tDown), ms(tRead))
+	fmt.Fprintf(w, "Projection:   %s, pixel %.6g x %.6g\n", g.Projection, g.Transform.PixelW, g.Transform.PixelH)
+	fmt.Fprintf(w, "Timings:      API %s, download %s, read %s\n", ms(tAPI), ms(tDown), ms(tRead))
 	if keep {
-		fmt.Fprintf(w, "Salvato:       %s\n", keptAs)
+		fmt.Fprintf(w, "Saved:        %s\n", keptAs)
 	}
-	fmt.Fprintf(w, "Fonte:         %s\n", dpc.Attribution)
+	fmt.Fprintf(w, "Source:       %s\n", dpc.Attribution)
 	if errors.Is(valErr, raster.ErrOutside) {
 		return valErr
 	}

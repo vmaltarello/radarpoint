@@ -37,7 +37,7 @@ type Geographic struct {
 
 func (Geographic) Forward(lat, lon float64) (float64, float64) { return lon, lat }
 func (Geographic) Inverse(x, y float64) (float64, float64)     { return y, x }
-func (Geographic) String() string                              { return "geografica lat/lon WGS84 (EPSG:4326)" }
+func (Geographic) String() string                              { return "geographic lat/lon WGS84 (EPSG:4326)" }
 
 // TransverseMercator is the ellipsoidal Transverse Mercator projection,
 // computed with Krüger's series in n to the fourth order (Karney 2011),

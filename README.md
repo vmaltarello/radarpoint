@@ -8,23 +8,23 @@ more.
 
 ```
 $ radarpoint --product SRI --lat 45.5966 --lon 8.9150
-Prodotto:      SRI (intensità di pioggia al suolo)
-Orario dato:   2026-10-01 12:40 UTC (14:40 ora italiana), periodo PT5M
-Punto:         45.5966, 8.9150
-Pixel:         x=320, y=244
-Valore:        0 mm/h (nessuna pioggia)
-File:          459 kB, 1200x1400 px, 1 banda float32, LZW, nodata=-9999 (dedotto, non dichiarato nel file)
-Proiezione:    Transverse Mercator WGS84 (lat0=42, lon0=12.5, k0=1, FE=0, FN=0), pixel 1000 x 1000
-Tempi:         API 259 ms, download 167 ms, lettura 0 ms
-Fonte:         Radar-DPC – Dipartimento della Protezione Civile (CC-BY-SA 4.0)
+Product:      SRI (rain rate at ground level)
+Data time:    2026-10-01 12:40 UTC (14:40 Italian time), period PT5M
+Point:        45.5966, 8.9150
+Pixel:        x=320, y=244
+Value:        0 mm/h (no rain)
+File:         459 kB, 1200x1400 px, 1 band float32, LZW, nodata=-9999 (inferred, not declared in the file)
+Projection:   Transverse Mercator WGS84 (lat0=42, lon0=12.5, k0=1, FE=0, FN=0), pixel 1000 x 1000
+Timings:      API 259 ms, download 167 ms, read 0 ms
+Source:       Radar-DPC – Dipartimento della Protezione Civile (CC-BY-SA 4.0)
 ```
 
-The command output is in Italian, since the data covers Italy only.
+The project has two programs:
 
-The project is at an early stage: today it performs a single reading and
-exits. The Go packages are meant to become the base of a small service that
-downloads each product once and answers point queries (see
-[Roadmap](#roadmap)).
+- `radarpoint`, a command-line tool that performs a single reading and exits;
+- `radarpointd`, a small HTTP service that downloads each product once, as
+  soon as it is published, keeps the last 30 minutes in memory and answers
+  point queries for any number of clients (see [HTTP service](#http-service)).
 
 - Pure Go, a single static binary, no GDAL or other C libraries.
 - No API key or registration needed: Radar-DPC data is open.
@@ -57,6 +57,7 @@ Or from a clone:
 git clone https://github.com/vmaltarello/radarpoint
 cd radarpoint
 go build -o radarpoint ./cmd/radarpoint
+go build -o radarpointd ./cmd/radarpointd
 ```
 
 ## Usage
@@ -79,9 +80,9 @@ outside the product area, `2` invalid arguments.
 
 Special values are reported explicitly:
 
-- radar not available at the point → `nessun dato (radar non disponibile in questa zona)`
+- radar not available at the point → `no data (radar not available at this point)`
 - point outside the product grid → error with the approximate covered area
-- zero rain → `0 mm/h (nessuna pioggia)`
+- zero rain → `0 mm/h (no rain)`
 
 ### Helper tools
 
@@ -89,6 +90,60 @@ Special values are reported explicitly:
   statistics. It is a small replacement for `gdalinfo`.
 - `go run ./cmd/tiffcrop in.tif out.tif fromRow toRow` cuts a band of rows from
   a file without re-encoding it. It is used to build the files in `testdata/`.
+
+## HTTP service
+
+```
+radarpointd --listen :8080 --products SRI,POH,TEMP --window 30m
+```
+
+| Endpoint | Returns |
+|---|---|
+| `GET /now?lat=&lon=` | latest value of every product at the point |
+| `GET /history?lat=&lon=&product=SRI` | values of all frames held in memory, oldest first; `product` must be one of the products the service follows |
+| `GET /healthz` | frames held per product; `503` until every product has data |
+| `GET /docs` | interactive API documentation |
+| `GET /openapi.json` | OpenAPI 3.1 description |
+
+```
+$ curl 'localhost:8080/now?lat=45.5966&lon=8.915'
+{
+  "lat": 45.5966,
+  "lon": 8.915,
+  "readings": [
+    {"product": "SRI", "description": "rain rate at ground level",
+     "time": "2026-10-01T13:25:00Z", "age_seconds": 745,
+     "status": "ok", "value": 0, "unit": "mm/h"},
+    {"product": "POH", "description": "probability of hail",
+     "time": "2026-10-01T13:30:00Z", "age_seconds": 445,
+     "status": "ok", "value": 0},
+    {"product": "TEMP", "description": "air temperature, interpolated from ground stations",
+     "time": "2026-10-01T13:00:00Z", "age_seconds": 2245,
+     "status": "ok", "value": 23.12, "unit": "°C"}
+  ],
+  "attribution": "Radar-DPC – Dipartimento della Protezione Civile (CC-BY-SA 4.0)"
+}
+```
+
+`status` is one of `ok`, `nodata` (no radar or station data at the point),
+`outside` (the point is outside the product grid) and `unavailable` (nothing
+downloaded yet); `value` is `null` unless the status is `ok`. Each reading
+carries its own `time`: products are updated at different rates and TEMP lags
+behind the radar products. Invalid parameters get a `422` answer in
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem format. Responses
+allow cross-origin requests, so a web page can call the API directly.
+
+How the service talks to Radar-DPC:
+
+- on start it downloads every instant within the window (6 frames of 5 minutes
+  for 30 minutes; at least the latest frame for hourly products);
+- it then waits until the next instant is due and checks once per interval
+  (1 minute for 5-minute products, 5 minutes for hourly ones) until it is
+  published, and fills any gap it finds;
+- instants the API reports as missing are skipped and not asked again.
+
+So the load on Radar-DPC does not depend on the number of clients: a few small
+requests and one download per product every 5 minutes.
 
 ## How it works
 
@@ -111,9 +166,13 @@ work.
 
 ```
 cmd/radarpoint/     the command-line tool
+cmd/radarpointd/    the HTTP service
 cmd/tiffdump/       inspect a GeoTIFF
 cmd/tiffcrop/       cut a band of rows out of a GeoTIFF
 internal/dpc/       Radar-DPC API client and product catalogue (units, nodata)
+internal/ingest/    keeps the store up to date with the latest products
+internal/store/     frames held in memory
+internal/api/       HTTP API, built with Huma
 internal/raster/    minimal TIFF/GeoTIFF reader
 internal/geo/       Transverse Mercator projection and pixel transform
 testdata/           small excerpts of real Radar-DPC files
@@ -247,12 +306,15 @@ output that shows data.
 
 ## Roadmap
 
-1. A long-running service that downloads each product once every 5 minutes
-   and keeps the last 30 minutes in memory.
-2. An HTTP API: `/now?lat=&lon=` for current rain, hail and temperature, and
-   `/nowcast?lat=&lon=` for the next hour.
-3. Nowcasting up to 60 minutes: first a simple motion extrapolation in Go,
-   then the [IRENE](https://huggingface.co/it4lia/irene) model (BSD 2-Clause).
-4. Integrations: Home Assistant, Telegram bot, webhooks.
+1. ~~A service that downloads each product once and keeps the last 30 minutes
+   in memory.~~ Done: `radarpointd`.
+2. ~~`/now` HTTP API.~~ Done.
+3. Nowcasting up to 60 minutes behind `/nowcast?lat=&lon=`: first a simple
+   motion extrapolation in Go, then the
+   [IRENE](https://huggingface.co/it4lia/irene) model (BSD 2-Clause).
+4. A web map: radar layers over a map, click a point to see its current value
+   and the last 30 minutes, built on the HTTP API.
+5. Container image for easy deployment.
+6. Integrations: Home Assistant, Telegram bot, webhooks.
 
 Lightning data is not available from the Radar-DPC API and is out of scope.
