@@ -3,7 +3,9 @@ package nowcast
 import (
 	"errors"
 	"math"
+	"runtime"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/vmaltarello/radarpoint/internal/geo"
@@ -28,6 +30,8 @@ type Nowcast struct {
 	Latest *Field
 	Motion *Motion
 	Pairs  int // frame pairs used to estimate the motion
+	// Observed are the input frames, oldest first; the last one is Latest.
+	Observed []Frame
 	// Hail, if not nil, is the probability of hail observed at Base. It is
 	// moved with the rain, since hail falls from the same storm cells.
 	Hail *Field
@@ -62,6 +66,7 @@ func Compute(frames []Frame, proj geo.Projection, gt geo.GeoTransform, step time
 		Step:      step,
 		Steps:     steps,
 		Latest:    latest.Field,
+		Observed:  sorted,
 		Motion:    EstimateMotion(pairs, o),
 		Pairs:     len(pairs),
 		proj:      proj,
@@ -129,24 +134,37 @@ func (n *Nowcast) Velocity(lat, lon float64) (speedKmh, towardDeg float64, ok bo
 	return speedKmh, towardDeg, true
 }
 
-// ForecastFields returns the forecast for the whole grid at steps 1…steps,
-// with NaN where the rain would come from outside the radar coverage. It is
-// meant for verification and maps; point queries should use Forecast.
-func (n *Nowcast) ForecastFields(steps int) []*Field {
-	w, h := n.Latest.W, n.Latest.H
+// ForecastFields moves src (the latest rain, or any field observed at Base
+// such as hail) along the motion and returns the whole grid at steps
+// 1…steps, with NaN where the values would come from outside the radar
+// coverage. It is meant for verification and maps; point queries should use
+// Forecast. Rows are spread over all CPUs.
+func (n *Nowcast) ForecastFields(src *Field, steps int) []*Field {
+	w, h := src.W, src.H
 	out := make([]*Field, steps)
 	for k := range out {
 		out[k] = &Field{W: w, H: h, V: make([]float32, w*h)}
 	}
-	for row := 0; row < h; row++ {
-		for col := 0; col < w; col++ {
-			x, y := float64(col)+0.5, float64(row)+0.5
-			for k := range steps {
-				x, y = n.stepBack(x, y)
-				out[k].V[row*w+col] = n.Latest.At(int(math.Floor(x)), int(math.Floor(y)))
-			}
-		}
+	var wg sync.WaitGroup
+	rows := make(chan int, h)
+	for row := range h {
+		rows <- row
 	}
+	close(rows)
+	for range runtime.GOMAXPROCS(0) {
+		wg.Go(func() {
+			for row := range rows {
+				for col := 0; col < w; col++ {
+					x, y := float64(col)+0.5, float64(row)+0.5
+					for k := range steps {
+						x, y = n.stepBack(x, y)
+						out[k].V[row*w+col] = src.At(int(math.Floor(x)), int(math.Floor(y)))
+					}
+				}
+			}
+		})
+	}
+	wg.Wait()
 	return out
 }
 
@@ -165,3 +183,7 @@ func (n *Nowcast) stepBack(x, y float64) (float64, float64) {
 	u, v = n.Motion.At(x-u/2, y-v/2)
 	return x - u, y - v
 }
+
+// Projection and Transform describe the grid the nowcast is computed on.
+func (n *Nowcast) Projection() geo.Projection  { return n.proj }
+func (n *Nowcast) Transform() geo.GeoTransform { return n.transform }

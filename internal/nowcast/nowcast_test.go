@@ -185,7 +185,7 @@ func TestForecastFieldsMatchPointForecast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fields := n.ForecastFields(6)
+	fields := n.ForecastFields(n.Latest, 6)
 	for _, p := range [][2]int{{50, 50}, {120, 80}, {180, 190}} {
 		lat, lon := tm.Inverse(gt.Center(p[0], p[1]))
 		pts, err := n.Forecast(lat, lon)

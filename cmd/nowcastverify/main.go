@@ -141,7 +141,7 @@ func run(ctx context.Context, o options) error {
 			fmt.Printf("%s  skipped: %v\n", base.Format("2006-01-02 15:04"), err)
 			continue
 		}
-		forecasts := n.ForecastFields(steps)
+		forecasts := n.ForecastFields(n.Latest, steps)
 
 		var case30 [2]table
 		for k := range steps {
