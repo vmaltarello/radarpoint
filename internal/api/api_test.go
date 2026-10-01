@@ -22,8 +22,8 @@ func newServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	st := store.New()
-	st.Add(&store.Frame{Product: "SRI", Time: t0.Add(-5 * time.Minute), Grid: g})
-	st.Add(&store.Frame{Product: "SRI", Time: t0, Grid: g})
+	st.Add(&store.Frame{Product: "SRI", Time: t0.Add(-5 * time.Minute), Period: 5 * time.Minute, Grid: g})
+	st.Add(&store.Frame{Product: "SRI", Time: t0, Period: 5 * time.Minute, Grid: g})
 	return &Server{Store: st, Products: []string{"SRI", "POH"},
 		Now: func() time.Time { return t0.Add(9 * time.Minute) }}
 }
@@ -144,4 +144,29 @@ func sameValue(a, b *float64) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func TestStale(t *testing.T) {
+	s := newServer(t)
+	// 9 minutes after the frame time is normal for SRI.
+	var resp PointBody
+	get(t, s, "/now?lat=45.5966&lon=8.915", http.StatusOK, &resp)
+	if resp.Readings[0].Stale {
+		t.Error("fresh SRI reported stale")
+	}
+	// 25 minutes without a new frame: Radar-DPC is late.
+	s.Now = func() time.Time { return t0.Add(25 * time.Minute) }
+	get(t, s, "/now?lat=45.5966&lon=8.915", http.StatusOK, &resp)
+	if sri := resp.Readings[0]; !sri.Stale || sri.Status != StatusOK || sri.Value == nil {
+		t.Errorf("late SRI: %+v; want stale with its value kept", sri)
+	}
+	var h struct {
+		OK       bool
+		Products map[string]struct{ Stale bool }
+	}
+	s.Products = []string{"SRI"}
+	get(t, s, "/healthz", http.StatusServiceUnavailable, &h)
+	if h.OK || !h.Products["SRI"].Stale {
+		t.Errorf("health %+v", h)
+	}
 }

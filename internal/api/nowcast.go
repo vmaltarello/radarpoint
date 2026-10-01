@@ -50,6 +50,7 @@ type NowcastBody struct {
 	Unit        string        `json:"unit" example:"mm/h"`
 	Status      string        `json:"status" enum:"ok,outside,unavailable" doc:"unavailable until two radar frames have been downloaded"`
 	BaseTime    *time.Time    `json:"base_time,omitempty" doc:"Time of the latest observation the forecast starts from"`
+	Stale       bool          `json:"stale" doc:"The forecast starts from data older than it should be"`
 	Motion      *Motion       `json:"motion,omitempty" doc:"Absent when no rain could be tracked anywhere"`
 	Steps       []NowcastStep `json:"steps"`
 	Method      string        `json:"method"`
@@ -77,6 +78,7 @@ func (s *Server) nowcast(_ context.Context, in *PointParams) (*nowcastOutput, er
 	}
 	base := n.Base
 	out.Body.BaseTime = &base
+	out.Body.Stale = info.Stale(n.Base, n.Step, s.clock())
 	pts, err := n.Forecast(in.Lat, in.Lon)
 	if errors.Is(err, raster.ErrOutside) {
 		out.Body.Status = StatusOutside

@@ -221,3 +221,27 @@ func TestInfo(t *testing.T) {
 		t.Error("VMI should be unknown")
 	}
 }
+
+func TestStale(t *testing.T) {
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	sri, _ := Lookup("SRI")
+	temp, _ := Lookup("TEMP")
+	vmi, _ := Lookup("VMI") // unknown delay: two periods allowed
+	for _, c := range []struct {
+		info   Info
+		period time.Duration
+		age    time.Duration
+		want   bool
+	}{
+		{sri, 5 * time.Minute, 15 * time.Minute, false},
+		{sri, 5 * time.Minute, 21 * time.Minute, true},
+		{temp, time.Hour, 100 * time.Minute, false},
+		{temp, time.Hour, 151 * time.Minute, true},
+		{vmi, 5 * time.Minute, 15 * time.Minute, false},
+		{vmi, 5 * time.Minute, 16 * time.Minute, true},
+	} {
+		if got := c.info.Stale(base, c.period, base.Add(c.age)); got != c.want {
+			t.Errorf("%s age %v: stale %v, want %v", c.info.Type, c.age, got, c.want)
+		}
+	}
+}

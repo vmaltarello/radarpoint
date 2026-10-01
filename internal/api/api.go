@@ -75,7 +75,7 @@ func (s *Server) Handler() http.Handler {
 		Method:      http.MethodGet,
 		Path:        "/healthz",
 		Summary:     "Frames held per product",
-		Description: "Answers 503 until every product has at least one frame.",
+		Description: "Answers 503 until every product has at least one frame, and whenever a product is stale.",
 	}, s.health)
 	return cors(mux)
 }
@@ -99,6 +99,7 @@ type Reading struct {
 	Description string     `json:"description,omitempty"`
 	Time        *time.Time `json:"time,omitempty" doc:"Nominal time of the data, UTC"`
 	AgeSeconds  *int64     `json:"age_seconds,omitempty" doc:"Seconds elapsed since time"`
+	Stale       bool       `json:"stale" doc:"The data is older than it should be: Radar-DPC may have stopped publishing"`
 	Status      string     `json:"status" enum:"ok,nodata,outside,unavailable"`
 	Value       *float64   `json:"value" doc:"Measured value; null unless status is ok"`
 	Unit        string     `json:"unit,omitempty" example:"mm/h"`
@@ -167,12 +168,13 @@ type ProductHealth struct {
 	Frames     int        `json:"frames"`
 	Latest     *time.Time `json:"latest,omitempty"`
 	AgeSeconds *int64     `json:"age_seconds,omitempty"`
+	Stale      bool       `json:"stale"`
 }
 
 type healthOutput struct {
 	Status int
 	Body   struct {
-		OK       bool                     `json:"ok" doc:"Every product has at least one frame"`
+		OK       bool                     `json:"ok" doc:"Every product has at least one frame, and none is stale"`
 		Products map[string]ProductHealth `json:"products"`
 	}
 }
@@ -185,9 +187,11 @@ func (s *Server) health(_ context.Context, _ *struct{}) (*healthOutput, error) {
 		frames := s.Store.Frames(p)
 		h := ProductHealth{Frames: len(frames)}
 		if len(frames) > 0 {
-			t := frames[len(frames)-1].Time
-			h.Latest, h.AgeSeconds = &t, s.age(t)
-		} else {
+			f := frames[len(frames)-1]
+			t := f.Time
+			h.Latest, h.AgeSeconds, h.Stale = &t, s.age(t), s.stale(f)
+		}
+		if len(frames) == 0 || h.Stale {
 			out.Body.OK = false
 			out.Status = http.StatusServiceUnavailable
 		}
@@ -204,7 +208,7 @@ func (s *Server) read(product string, f *store.Frame, lat, lon float64) Reading 
 		return rd
 	}
 	t := f.Time
-	rd.Time, rd.AgeSeconds = &t, s.age(t)
+	rd.Time, rd.AgeSeconds, rd.Stale = &t, s.age(t), s.stale(f)
 	v, _, _, err := f.Grid.ValueAt(lat, lon)
 	switch {
 	case errors.Is(err, raster.ErrOutside):
@@ -222,13 +226,22 @@ func (s *Server) read(product string, f *store.Frame, lat, lon float64) Reading 
 	return rd
 }
 
-func (s *Server) age(t time.Time) *int64 {
-	now := time.Now
+func (s *Server) clock() time.Time {
 	if s.Now != nil {
-		now = s.Now
+		return s.Now()
 	}
-	a := int64(now().Sub(t).Seconds())
+	return time.Now()
+}
+
+func (s *Server) age(t time.Time) *int64 {
+	a := int64(s.clock().Sub(t).Seconds())
 	return &a
+}
+
+// stale reports whether f is older than its product normally gets.
+func (s *Server) stale(f *store.Frame) bool {
+	info, _ := dpc.Lookup(f.Product)
+	return info.Stale(f.Time, f.Period, s.clock())
 }
 
 // cors lets browser pages on other origins call the API, e.g. a map viewer.

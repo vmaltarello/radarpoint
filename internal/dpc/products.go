@@ -4,6 +4,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Info describes how to interpret the values of a product file. Units and
@@ -19,18 +20,24 @@ type Info struct {
 	// ZeroIsNoData marks products where exactly 0 is a mask (e.g. outside
 	// Italy), not a measurement.
 	ZeroIsNoData bool
+	// MaxDelay is the longest normal wait between the nominal time of an
+	// instant and its publication, as observed on the API. Zero means
+	// unknown; see Stale.
+	MaxDelay time.Duration
 }
 
 const radarNoData = "no data (radar not available at this point)"
 
 var catalog = map[string]Info{
 	"SRI": {Type: "SRI", Description: "rain rate at ground level", Unit: "mm/h",
-		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no rain"},
+		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no rain",
+		MaxDelay: 15 * time.Minute},
 	"POH": {Type: "POH", Description: "probability of hail",
-		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no hail"},
+		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no hail",
+		MaxDelay: 15 * time.Minute},
 	"TEMP": {Type: "TEMP", Description: "air temperature, interpolated from ground stations", Unit: "°C",
 		NoData: []float64{-99999}, ZeroIsNoData: true,
-		NoDataText: "no data (point at sea or outside Italy)"},
+		NoDataText: "no data (point at sea or outside Italy)", MaxDelay: 90 * time.Minute},
 }
 
 // Lookup returns the known interpretation of a product type. Unknown types
@@ -52,3 +59,15 @@ func (i Info) IsNoData(v float64) bool {
 var ValidTypes = []string{"VMI", "SRI", "SRT1", "IR_108", "TEMP", "CUM3", "CUM6", "CUM12", "CUM24",
 	"CAPPI_1", "CAPPI_2", "CAPPI_3", "CAPPI_4", "CAPPI_5", "CAPPI_6", "CAPPI_7", "CAPPI_8", "CAPPI_9", "CAPPI_10",
 	"VIL", "ETM", "POH", "SITES"}
+
+// Stale reports whether data with nominal time t is older than it should be
+// at now, given the product period: the next instant should have been
+// published by t + period + MaxDelay. Without a known MaxDelay, two periods
+// are allowed.
+func (i Info) Stale(t time.Time, period time.Duration, now time.Time) bool {
+	delay := i.MaxDelay
+	if delay == 0 {
+		delay = 2 * period
+	}
+	return now.Sub(t) > period+delay
+}

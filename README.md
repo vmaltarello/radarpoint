@@ -129,7 +129,11 @@ $ curl 'localhost:8080/now?lat=45.5966&lon=8.915'
 
 `status` is one of `ok`, `nodata` (no radar or station data at the point),
 `outside` (the point is outside the product grid) and `unavailable` (nothing
-downloaded yet); `value` is `null` unless the status is `ok`. Each reading
+downloaded yet); `value` is `null` unless the status is `ok`. `stale` is `true`
+when the data is older than it normally gets (more than 20 minutes for SRI and
+POH, 2.5 hours for TEMP): Radar-DPC has probably stopped publishing, and the
+value is kept but should not be presented as current. `/healthz` then answers
+`503`. Each reading
 carries its own `time`: products are updated at different rates and TEMP lags
 behind the radar products. Invalid parameters get a `422` answer in
 [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem format. Responses
