@@ -153,6 +153,7 @@ func formatValue(info dpc.Info, v float64) string {
 	if info.IsNoData(v) {
 		return info.NoDataText
 	}
+	v = info.Display(v)
 	s := strconv.FormatFloat(v, 'f', 2, 64)
 	s = strings.TrimRight(strings.TrimRight(s, "0"), ".")
 	if s == "-0" {

@@ -220,7 +220,7 @@ func (s *Server) read(product string, f *store.Frame, lat, lon float64) Reading 
 	case info.IsNoData(v):
 		rd.Status = StatusNoData
 	default:
-		v = math.Round(v*100) / 100 // stored as float32: 2.0199999 → 2.02
+		v = math.Round(info.Display(v)*100) / 100 // stored as float32: 2.0199999 → 2.02
 		rd.Status, rd.Value = StatusOK, &v
 	}
 	return rd

@@ -14,9 +14,12 @@ type Info struct {
 	Type        string
 	Description string
 	Unit        string
-	NoData      []float64 // sentinel values meaning "no data"
-	NoDataText  string    // shown for nodata values
-	ZeroText    string    // shown for a value of exactly 0, if meaningful
+	// Scale converts stored values to the unit shown, e.g. 100 for a 0–1
+	// probability shown in %. Zero means 1.
+	Scale      float64
+	NoData     []float64 // sentinel values meaning "no data"
+	NoDataText string    // shown for nodata values
+	ZeroText   string    // shown for a value of exactly 0, if meaningful
 	// ZeroIsNoData marks products where exactly 0 is a mask (e.g. outside
 	// Italy), not a measurement.
 	ZeroIsNoData bool
@@ -32,8 +35,9 @@ var catalog = map[string]Info{
 	"SRI": {Type: "SRI", Description: "rain rate at ground level", Unit: "mm/h",
 		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no rain",
 		MaxDelay: 15 * time.Minute},
-	"POH": {Type: "POH", Description: "probability of hail",
-		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no hail",
+	// POH is stored as 0–1 in steps of 1/254; values under 0.30 are set to 0.
+	"POH": {Type: "POH", Description: "probability of hail", Unit: "%", Scale: 100,
+		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "hail unlikely, under 30%",
 		MaxDelay: 15 * time.Minute},
 	"TEMP": {Type: "TEMP", Description: "air temperature, interpolated from ground stations", Unit: "°C",
 		NoData: []float64{-99999}, ZeroIsNoData: true,
@@ -70,4 +74,12 @@ func (i Info) Stale(t time.Time, period time.Duration, now time.Time) bool {
 		delay = 2 * period
 	}
 	return now.Sub(t) > period+delay
+}
+
+// Display converts a stored value to the unit shown to users.
+func (i Info) Display(v float64) float64 {
+	if i.Scale == 0 {
+		return v
+	}
+	return v * i.Scale
 }
