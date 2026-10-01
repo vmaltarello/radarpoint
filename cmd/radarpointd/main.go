@@ -59,9 +59,12 @@ func main() {
 	client := dpc.New(userAgent)
 
 	// The rain nowcast is recomputed from the SRI frames each time a new one
-	// arrives: 12 steps of 5 minutes.
+	// arrives: 12 steps of 5 minutes. The latest POH frame, if followed, is
+	// moved along with the rain.
 	sri, _ := dpc.Lookup("SRI")
-	engine := &nowcast.Engine{Steps: 12, Options: nowcast.DefaultOptions, IsNoData: sri.IsNoData}
+	poh, _ := dpc.Lookup("POH")
+	engine := &nowcast.Engine{Steps: 12, Options: nowcast.DefaultOptions,
+		IsNoData: sri.IsNoData, HailIsNoData: poh.IsNoData}
 	updateNowcast := func() {
 		start := time.Now()
 		n, err := engine.Update(st.Frames("SRI"))
@@ -76,8 +79,15 @@ func main() {
 	var wg sync.WaitGroup
 	for _, p := range types {
 		poller := &ingest.Poller{Client: client, Store: st, Product: p, Window: *window, Log: log}
-		if p == "SRI" {
+		switch p {
+		case "SRI":
 			poller.OnUpdate = updateNowcast
+		case "POH":
+			poller.OnUpdate = func() {
+				if err := engine.SetHail(st.Latest("POH")); err != nil {
+					log.Warn("hail frame not usable", "err", err)
+				}
+			}
 		}
 		wg.Go(func() { poller.Run(ctx) })
 	}

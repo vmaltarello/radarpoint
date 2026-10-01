@@ -23,8 +23,9 @@ func (s *Server) registerNowcast(api huma.API) {
 		OperationID: "nowcast",
 		Method:      http.MethodGet,
 		Path:        "/nowcast",
-		Summary:     "Rain forecast for the next hour at a point",
-		Description: "Lead 0 is the latest observation, followed by one value per 5-minute step up to 60 minutes. " + nowcastNote,
+		Summary:     "Rain and hail forecast for the next hour at a point",
+		Description: "Lead 0 is the latest observation, followed by one value per 5-minute step up to 60 minutes. " +
+			"When POH is followed, the probability of hail is moved with the rain as well. " + nowcastNote,
 	}, s.nowcast)
 }
 
@@ -40,6 +41,7 @@ type NowcastStep struct {
 	LeadMinutes int       `json:"lead_minutes"`
 	Status      string    `json:"status" enum:"ok,nodata" doc:"nodata: the rain would come from outside radar coverage"`
 	Value       *float64  `json:"value" doc:"Rain rate; null unless status is ok"`
+	HailPercent *float64  `json:"hail_percent" doc:"Probability of hail in %; 0 means under 30%. Null when unknown: status not ok, or POH not followed or not yet matched to this forecast"`
 }
 
 // NowcastBody is the response of /nowcast.
@@ -67,6 +69,7 @@ func (s *Server) nowcast(_ context.Context, in *PointParams) (*nowcastOutput, er
 		return nil, err
 	}
 	info, _ := dpc.Lookup("SRI")
+	poh, _ := dpc.Lookup("POH")
 	out := &nowcastOutput{Body: NowcastBody{
 		Lat: in.Lat, Lon: in.Lon, Product: "SRI", Unit: info.Unit,
 		Steps: []NowcastStep{}, Method: "lagrangian-persistence", Note: nowcastNote,
@@ -98,6 +101,10 @@ func (s *Server) nowcast(_ context.Context, in *PointParams) (*nowcastOutput, er
 		if !math.IsNaN(p.Value) {
 			v := math.Round(p.Value*100) / 100
 			st.Status, st.Value = StatusOK, &v
+			if !math.IsNaN(p.Hail) {
+				h := math.Round(poh.Display(p.Hail))
+				st.HailPercent = &h
+			}
 		}
 		out.Body.Steps = append(out.Body.Steps, st)
 	}

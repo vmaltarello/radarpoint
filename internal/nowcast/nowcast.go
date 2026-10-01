@@ -28,6 +28,9 @@ type Nowcast struct {
 	Latest *Field
 	Motion *Motion
 	Pairs  int // frame pairs used to estimate the motion
+	// Hail, if not nil, is the probability of hail observed at Base. It is
+	// moved with the rain, since hail falls from the same storm cells.
+	Hail *Field
 
 	proj      geo.Projection
 	transform geo.GeoTransform
@@ -70,12 +73,14 @@ func Compute(frames []Frame, proj geo.Projection, gt geo.GeoTransform, step time
 	return n, nil
 }
 
-// Point is the forecast at one lead time. Value is NaN where the rain would
-// come from outside the radar coverage.
+// Point is the forecast at one lead time. Value and Hail are NaN where the
+// rain would come from outside the radar coverage; Hail is also NaN when the
+// nowcast has no hail field.
 type Point struct {
 	Time  time.Time
 	Lead  time.Duration
 	Value float64
+	Hail  float64
 }
 
 // Forecast returns the observation (lead 0) and the forecast for every step
@@ -93,9 +98,13 @@ func (n *Nowcast) Forecast(lat, lon float64) ([]Point, error) {
 		if k > 0 {
 			x, y = n.stepBack(x, y)
 		}
-		val := float64(n.Latest.At(int(math.Floor(x)), int(math.Floor(y))))
+		px, py := int(math.Floor(x)), int(math.Floor(y))
+		hail := math.NaN()
+		if n.Hail != nil {
+			hail = float64(n.Hail.At(px, py))
+		}
 		d := time.Duration(k) * n.Step
-		out = append(out, Point{Time: n.Base.Add(d), Lead: d, Value: val})
+		out = append(out, Point{Time: n.Base.Add(d), Lead: d, Value: float64(n.Latest.At(px, py)), Hail: hail})
 	}
 	return out, nil
 }
@@ -139,6 +148,14 @@ func (n *Nowcast) ForecastFields(steps int) []*Field {
 		}
 	}
 	return out
+}
+
+// WithHail returns a copy of the nowcast that also moves the given hail
+// field, observed at the same time as Base.
+func (n *Nowcast) WithHail(hail *Field) *Nowcast {
+	c := *n
+	c.Hail = hail
+	return &c
 }
 
 // stepBack moves pixel position (x, y) one time step back along the motion,

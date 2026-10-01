@@ -9,15 +9,19 @@ import (
 )
 
 // Engine recomputes the nowcast whenever new frames arrive and keeps the
-// latest result for concurrent readers.
+// latest result for concurrent readers. Rain frames drive the motion; an
+// optional hail frame with the same time is moved along with the rain.
 type Engine struct {
-	Steps    int // forecast steps, e.g. 12 for one hour of 5-minute steps
-	Options  Options
-	IsNoData func(float64) bool
+	Steps        int // forecast steps, e.g. 12 for one hour of 5-minute steps
+	Options      Options
+	IsNoData     func(float64) bool // nodata test for rain frames
+	HailIsNoData func(float64) bool // nodata test for hail frames
 
-	mu      sync.Mutex // serialises Update
-	fields  map[time.Time]*Field
-	current atomic.Pointer[Nowcast]
+	mu       sync.Mutex // serialises Update and SetHail
+	fields   map[time.Time]*Field
+	hail     *Field // latest hail field and its time
+	hailTime time.Time
+	current  atomic.Pointer[Nowcast]
 }
 
 // Current returns the latest nowcast, or nil before the first one.
@@ -58,6 +62,29 @@ func (e *Engine) Update(frames []*store.Frame) (*Nowcast, error) {
 	if err != nil {
 		return nil, err
 	}
+	if e.hail != nil && e.hailTime.Equal(n.Base) {
+		n.Hail = e.hail
+	}
 	e.current.Store(n)
 	return n, nil
+}
+
+// SetHail provides the latest hail frame. It is attached to the current
+// nowcast if their times match, and kept for the next Update otherwise, so
+// rain and hail frames may arrive in any order.
+func (e *Engine) SetHail(f *store.Frame) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if f == nil || (e.hail != nil && e.hailTime.Equal(f.Time)) {
+		return nil
+	}
+	fld, err := NewField(f.Grid, e.HailIsNoData)
+	if err != nil {
+		return err
+	}
+	e.hail, e.hailTime = fld, f.Time
+	if n := e.current.Load(); n != nil && n.Base.Equal(f.Time) {
+		e.current.Store(n.WithHail(fld))
+	}
+	return nil
 }

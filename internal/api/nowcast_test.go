@@ -50,6 +50,9 @@ func TestNowcast(t *testing.T) {
 			t.Errorf("step +%d: %s %v", st.LeadMinutes, st.Status, deref(st.Value))
 		}
 	}
+	if b.Steps[0].HailPercent != nil {
+		t.Errorf("hail_percent %v without a hail frame", *b.Steps[0].HailPercent)
+	}
 	if b.Motion == nil || b.Motion.SpeedKmh != 0 {
 		t.Errorf("motion %+v, want 0 km/h", b.Motion)
 	}
@@ -76,4 +79,30 @@ func TestNowcastNotServedWithoutEngine(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status %d, want 404", rec.Code)
 	}
+}
+
+func TestNowcastHail(t *testing.T) {
+	s := nowcastServer(t)
+	g, _ := raster.OpenGeoTIFF("../../testdata/sri_crop.tif")
+	poh, _ := dpc.Lookup("POH")
+	// Stand-in hail field: the SRI crop, whose rainy pixel holds 2.02, i.e.
+	// 202% once scaled; only the plumbing and the scaling are checked.
+	withHail := s.Nowcast().WithHail(mustField(t, g, poh.IsNoData))
+	s.Nowcast = func() *nowcast.Nowcast { return withHail }
+
+	var b NowcastBody
+	get(t, s, "/nowcast?lat=45.78886&lon=6.01149", http.StatusOK, &b)
+	for _, st := range b.Steps {
+		if st.HailPercent == nil || *st.HailPercent != 202 {
+			t.Fatalf("step +%d hail_percent %v, want 202", st.LeadMinutes, deref(st.HailPercent))
+		}
+	}
+}
+
+func mustField(t *testing.T, g *raster.GeoTIFF, nd func(float64) bool) *nowcast.Field {
+	f, err := nowcast.NewField(g, nd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
