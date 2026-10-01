@@ -165,14 +165,25 @@ standard baseline in radar nowcasting:
    on a 2 km grid). For each block, the shift that best overlays the older
    frame on the newer one is the displacement of the rain. Displacements from
    the last 5 frame pairs are averaged, blocks without rain take the median
-   motion, and the field is smoothed.
+   motion, and the field is smoothed. Each pair is measured once and cached,
+   so a new frame costs one pair, not five.
 2. **Extrapolation.** To forecast a point at +k steps, the motion is followed
    backwards from the point for k steps, and the latest observation is read
    where the rain comes from.
+3. **Smoothing with lead time.** The value read there is a Gaussian average
+   whose width grows with the lead time (0.75 km per 5-minute step, about
+   9 km at one hour): small cells cannot be placed precisely far ahead, so
+   the forecast blurs them instead of predicting a sharp cell in the wrong
+   place. This alone improved the scores by 2–18% (see below).
+4. **Probability of rain.** Each step also gives the share of pixels with
+   rain (≥ 0.2 mm/h) in a square around the place the rain comes from, from
+   5 km across now to about 53 km across at one hour, as the position error
+   grows. The size was chosen so the probability is calibrated: where it
+   says 70%, it rained about 7 times out of 10.
 
-The motion is recomputed once for every new SRI frame (about 0.5 s on a
-desktop CPU, mostly spent decoding the first frames); a `/v1/nowcast` query then
-takes microseconds.
+The motion is recomputed once for every new SRI frame (well under a second on
+a desktop CPU); a `/v1/nowcast` query then takes about 0.07 ms
+(`go test ./internal/nowcast -bench Forecast`).
 
 **Hail.** When POH is followed too, the probability of hail observed at the
 same time is moved along the same trajectories: hail falls from the same storm
@@ -187,10 +198,10 @@ $ curl 'localhost:8080/v1/nowcast?lat=45.5966&lon=8.915'
   "stale": false,
   "motion": {"speed_kmh": 10, "toward_deg": 109},
   "steps": [
-    {"time": "2026-10-01T13:45:00Z", "lead_minutes": 0,  "status": "ok", "value": 0, "hail_percent": 0},
-    {"time": "2026-10-01T13:50:00Z", "lead_minutes": 5,  "status": "ok", "value": 0, "hail_percent": 0},
+    {"time": "2026-10-01T13:45:00Z", "lead_minutes": 0,  "status": "ok", "value": 0, "rain_probability": 0, "hail_percent": 0},
+    {"time": "2026-10-01T13:50:00Z", "lead_minutes": 5,  "status": "ok", "value": 0, "rain_probability": 0, "hail_percent": 0},
     …
-    {"time": "2026-10-01T14:45:00Z", "lead_minutes": 60, "status": "ok", "value": 0, "hail_percent": 0}
+    {"time": "2026-10-01T14:45:00Z", "lead_minutes": 60, "status": "ok", "value": 0, "rain_probability": 12, "hail_percent": 0}
   ],
   "method": "lagrangian-persistence",
   …
@@ -199,6 +210,9 @@ $ curl 'localhost:8080/v1/nowcast?lat=45.5966&lon=8.915'
 
 Lead 0 is the observation the forecast starts from. A step has status
 `nodata` when the rain would come from outside the radar coverage.
+`value` is the expected rain rate at the point; `rain_probability` (%) is
+usually the more useful figure for "will it rain here?", especially beyond
+20 minutes.
 `hail_percent` is `null` when POH is not followed or its latest frame does not
 have the same time as the rain frame yet (they are published a few seconds
 apart).
@@ -224,21 +238,41 @@ and do not load Radar-DPC again; the first run downloads about 430 files
 (~200 MB).
 
 Results of `--cases 20` on 1 October 2026 (18 September – 1 October, rain
-over 2.4–6.5% of the covered area):
+over 2–6% of the covered area), without and with the lead-time smoothing:
 
-| Lead | ≥0.5 mm/h nowcast | persistence | ≥5 mm/h nowcast | persistence |
-|---|---|---|---|---|
-| +5 min | 0.815 | 0.797 | 0.695 | 0.680 |
-| +15 min | 0.655 | 0.590 | 0.425 | 0.345 |
-| +30 min | 0.497 | 0.420 | 0.242 | 0.178 |
-| +45 min | 0.410 | 0.329 | 0.156 | 0.114 |
-| +60 min | 0.346 | 0.262 | 0.125 | 0.080 |
+| Lead | ≥0.5 mm/h nowcast | without smoothing | persistence | ≥5 mm/h nowcast | without smoothing | persistence |
+|---|---|---|---|---|---|---|
+| +5 min | 0.813 | 0.808 | 0.789 | 0.658 | 0.653 | 0.633 |
+| +15 min | 0.665 | 0.651 | 0.583 | 0.440 | 0.412 | 0.347 |
+| +30 min | 0.538 | 0.511 | 0.425 | 0.291 | 0.258 | 0.194 |
+| +45 min | 0.451 | 0.414 | 0.329 | 0.211 | 0.179 | 0.126 |
+| +60 min | 0.391 | 0.348 | 0.270 | 0.151 | 0.129 | 0.083 |
 
-The nowcast beats persistence at every lead time, by about 20% at 30 minutes
-and 25–55% for heavier rain. Absolute skill for heavy rain is low beyond
+The nowcast beats persistence at every lead time, by about 25% at 30 minutes
+and 50–80% for heavier rain. Absolute skill for heavy rain is low beyond
 30 minutes: intense cells grow and decay faster than they move, which
 extrapolation cannot capture. None of these cases had widespread rain (more
 than 10% of the area); results on such days are welcome.
+
+The CSI is strict: a cell forecast 3 km off counts both as a miss and as a
+false alarm. For "will it rain here?" the probability is the better guide,
+and the tool also checks that it is calibrated. Observed frequency of rain
+for each forecast probability, same 20 cases:
+
+| Forecast | 10–20% | 30–40% | 50–60% | 70–80% | 90–100% |
+|---|---|---|---|---|---|
+| +15 min | 10% | 29% | 57% | 78% | 96% |
+| +30 min | 12% | 33% | 56% | 74% | 94% |
+| +60 min | 14% | 32% | 50% | 69% | 87% |
+
+Its Brier score (lower is better) is 30–45% below that of a yes/no forecast
+from the same extrapolation (0.019 against 0.030 at 30 minutes).
+
+Options to try other settings, with their current defaults:
+`--smooth 0.75` (smoothing growth, pixels per step), `--prob-radius 2` and
+`--prob-growth 2` (probability square, half side and growth in pixels),
+`--robust` and `--decay 1` (median and recency weights when combining frame
+pairs; neither made a measurable difference on these cases).
 
 ## How it works
 
@@ -265,6 +299,7 @@ cmd/radarpointd/    the HTTP service
 cmd/tiffdump/       inspect a GeoTIFF
 cmd/tiffcrop/       cut a band of rows out of a GeoTIFF
 cmd/nowcastverify/ score the nowcast against real observations
+cmd/tempmask/      rebuild the TEMP no-data mask
 .github/        CI workflow and issue templates
 internal/dpc/       Radar-DPC API client and product catalogue (units, nodata)
 internal/ingest/    keeps the store up to date with the latest products
@@ -346,9 +381,11 @@ the samples match and the best alignment is with no shift.
   The tool and the API show it in % (0–100).
 - **TEMP**: °C, no scale or offset. `−99999` marks a few missing pixels, and
   **exactly 0 marks sea and areas outside Italy** (about three quarters of the
-  grid). The tool treats an exact 0 as no data for this product. A real
-  temperature of exactly 0.000 °C stored as float32 is extremely unlikely, but
-  the format is ambiguous.
+  grid). To tell that 0 from a real 0 °C, `internal/dpc/tempmask.png` marks
+  the pixels that were exactly 0 in every file over two weeks (104 files, day
+  and night): sea, foreign countries, San Marino and Vatican City. An exact 0
+  is no data only there; on land it is shown as 0 °C. The mask is rebuilt with
+  `go run ./cmd/tempmask`, and ignored if Radar-DPC changes the TEMP grid.
 - No file carries the `GDAL_NODATA` tag. Nodata values are defined per
   product in [`internal/dpc/products.go`](internal/dpc/products.go).
 
