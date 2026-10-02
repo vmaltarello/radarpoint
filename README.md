@@ -198,7 +198,26 @@ a desktop CPU); a `/v1/nowcast` query then takes about 0.07 ms
 
 **Hail.** When POH is followed too, the probability of hail observed at the
 same time is moved along the same trajectories: hail falls from the same storm
-cells as the heaviest rain. Each step then carries `hail_percent`.
+cells as the heaviest rain. Each step then carries `hail_percent`. Hail is
+moved without the rain's lead-time smoothing: its cells are a few kilometres
+wide, and blurring them like the rain wiped them out within half an hour.
+
+Hail is far less predictable than rain. On the 150 moments with the largest
+area of POH ≥ 50% between May and September 2026 (at most three a day, on 70
+days), scored against the POH observed later:
+
+| Lead | POH ≥ 50%: CSI | persistence | POH ≥ 80%: CSI | persistence |
+|---|---|---|---|---|
+| +15 min | 0.229 | 0.137 | 0.181 | 0.097 |
+| +30 min | 0.073 | 0.033 | 0.050 | 0.015 |
+| +60 min | 0.010 | 0.006 | 0.006 | 0.002 |
+
+The useful range is about 15–20 minutes. As a warning, "POH ≥ 50% at a
+point without hail now, within 30 minutes": a forecast at the point itself
+catches 34% of the cases, about 12 minutes ahead, and 57% of its warnings see
+no hail there; a forecast anywhere within 5 km catches 72%, about 15 minutes
+ahead, with 82% of warnings seeing no hail at the point itself. These are
+radar-to-radar scores per pixel, not checked against hail on the ground.
 
 ```
 $ curl 'localhost:8080/v1/nowcast?lat=45.5966&lon=8.915'
