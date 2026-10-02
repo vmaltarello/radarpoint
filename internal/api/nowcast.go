@@ -141,7 +141,7 @@ func (s *Server) currentNowcast() *nowcast.Nowcast {
 
 const ireneNote = "IRENE ensemble forecast (Fondazione Bruno Kessler): a neural network trained on " +
 	"the Radar-DPC composite that also learns how rain grows and decays; value is the ensemble mean, " +
-	"rain_probability the share of members with rain. Motion and hail come from the extrapolation."
+	"rain_probability the share of members with rain, calibrated on past cases. Motion and hail come from the extrapolation."
 
 // ireneFor returns the IRENE forecast to use for n, or nil for the
 // extrapolation. IRENE is used only if its forecast starts from the same

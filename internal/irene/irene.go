@@ -4,7 +4,8 @@
 // IRENE is a neural network by Fondazione Bruno Kessler trained on the
 // Radar-DPC composite: from the last 6 frames it produces an ensemble of
 // forecasts for the next hour. The service returns, per 5-minute step, the
-// ensemble mean rain rate and the share of members with rain.
+// ensemble mean rain rate and the share of members with rain, which the
+// client turns into a calibrated probability.
 package irene
 
 import (
@@ -46,7 +47,7 @@ type Forecast struct {
 	Step    time.Duration
 	Members int
 	Mean    []*nowcast.Field // ensemble mean rain rate per step, mm/h
-	Prob    []*nowcast.Field // probability of rain per step, 0–1
+	Prob    []*nowcast.Field // calibrated probability of rain per step, 0–1
 	Took    time.Duration    // time spent by the service
 }
 
@@ -108,7 +109,7 @@ func (c *Client) Forecast(ctx context.Context, past []*nowcast.Field, base time.
 		prob := &nowcast.Field{W: w, H: h, V: make([]float32, n)}
 		for i := range n {
 			mean.V[i] = math.Float32frombits(binary.LittleEndian.Uint32(block[4*i:]))
-			prob.V[i] = float32(block[4*n+i]) / 100
+			prob.V[i] = calibrate(float32(block[4*n+i])/100, c.Members, c.Threshold, k)
 		}
 		fc.Mean, fc.Prob = append(fc.Mean, mean), append(fc.Prob, prob)
 	}

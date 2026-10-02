@@ -69,7 +69,7 @@ func TestClientForecast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fc.Mean) != 3 || fc.Mean[2].V[7] != 3 || fc.Prob[0].V[0] != 0.5 || !fc.Base.Equal(base) {
+	if len(fc.Mean) != 3 || fc.Mean[2].V[7] != 3 || fc.Prob[0].V[0] != calibration4[0][2] || !fc.Base.Equal(base) {
 		t.Fatalf("forecast %+v", fc)
 	}
 	if _, err := c.Forecast(context.Background(), past[:5], base, 5*time.Minute, 3); err == nil {
@@ -135,5 +135,34 @@ func TestRunner(t *testing.T) {
 	r.Request(context.Background(), testNowcast(t, 8, true)) // a later base, frames 1, 3, 4, 5, 6, 7
 	if err := <-done; !errors.Is(err, ErrGap) {
 		t.Errorf("gap: err = %v", err)
+	}
+}
+
+func TestCalibrate(t *testing.T) {
+	for _, c := range []struct {
+		share     float32
+		members   int
+		threshold float32
+		k         int
+		want      float32
+	}{
+		{0.5, 4, 0.2, 0, calibration4[0][2]},
+		{0.75, 4, 0.2, 11, calibration4[11][3]},
+		{1, 4, 0.2, 5, calibration4[5][4]},
+		{0, 4, 0.2, 5, calibration4[5][0]},
+		{0.5, 10, 0.2, 0, 0.5}, // other member counts are not calibrated
+		{0.5, 4, 1, 0, 0.5},    // nor other thresholds
+		{0.5, 4, 0.2, 12, 0.5}, // nor steps beyond one hour
+	} {
+		if got := calibrate(c.share, c.members, c.threshold, c.k); got != c.want {
+			t.Errorf("calibrate(%v, %d, %v, %d) = %v, want %v", c.share, c.members, c.threshold, c.k, got, c.want)
+		}
+	}
+	for k, row := range calibration4 {
+		for l := 1; l < len(row); l++ {
+			if row[l] <= row[l-1] {
+				t.Errorf("step %d: calibration not increasing at level %d", k, l)
+			}
+		}
 	}
 }
