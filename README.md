@@ -251,7 +251,8 @@ At 10% the model warns as many episodes as the moved POH within 5 km, as
 early, with 40% fewer warnings. On the 107 days not used to fit it the
 figures are the same. Depending on the rule, a fifth to a half of the
 episodes get no warning before they start; these are likely new cells,
-which no radar nowcast sees coming.
+which no radar nowcast sees coming. Details and limits:
+[docs/verification.md](docs/verification.md#hail).
 
 ```
 $ curl 'localhost:8080/v1/nowcast?lat=45.5966&lon=8.915'
@@ -341,10 +342,21 @@ extrapolation:
 - On 25 of the summer storms, a single member alone was slightly worse than
   the extrapolation for heavy rain: the mean is what makes the difference.
 
-On recent data, the 20 cases of September 2026 used below, IRENE is 7–14%
-better for rain in general and level for heavy rain (CSI at +30 min: 0.591
-against 0.538 at 0.5 mm/h, 0.287 against 0.291 at 5 mm/h); those cases had
-no summer storms.
+The summer of 2026, after IRENE's training, confirms it: on 102 cases from
+12 May to 1 October 2026 (85 storms, 17 random moments), downloaded from
+Radar-DPC:
+
+| Lead | ≥0.5 mm/h IRENE | extrapolation | ≥5 mm/h IRENE | extrapolation |
+|---|---|---|---|---|
+| +15 min | 0.727 | 0.674 | 0.549 | 0.497 |
+| +30 min | 0.616 | 0.547 | 0.388 | 0.339 |
+| +60 min | 0.489 | 0.419 | 0.243 | 0.210 |
+
+At points dry now, IRENE raises a third fewer false alarms for rain within
+the hour (23% of its warnings against 35%), and the calibration fitted on
+2020 holds: 2 of 4 members verified at 46%, 3 of 4 at 65%. The method, the
+results by category and region, and how to reproduce them are in
+[docs/verification.md](docs/verification.md).
 
 ### Verification
 
@@ -422,13 +434,18 @@ cmd/radarpointd/    the HTTP service
 irene/              optional IRENE forecast service (Python, Docker)
 cmd/tiffdump/       inspect a GeoTIFF
 cmd/tiffcrop/       cut a band of rows out of a GeoTIFF
-cmd/nowcastverify/ score the nowcast against real observations
-cmd/tempmask/      rebuild the TEMP no-data mask
+cmd/nowcastverify/  score the nowcast against real observations
+cmd/dpcarchive/     download past seasons of Radar-DPC products
+cmd/seasonverify/   score rain and hail forecasts on archived seasons
+cmd/tempmask/       rebuild the TEMP no-data mask
+verify/             Python scripts for IRENE and the hail model (Docker)
+docs/               verification method and results
 .github/        CI workflow and issue templates
 internal/dpc/       Radar-DPC API client and product catalogue (units, nodata)
 internal/ingest/    keeps the store up to date with the latest products
 internal/store/     frames held in memory
 internal/irene/     client and background runner for the IRENE service
+internal/hailrisk/  probability of hail within 30 minutes
 internal/nowcast/   motion estimation and rain extrapolation
 internal/api/       HTTP API, built with Huma
 internal/raster/    minimal TIFF/GeoTIFF reader
