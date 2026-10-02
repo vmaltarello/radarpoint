@@ -1,0 +1,28 @@
+# radarpointd with the optional IRENE forecast service.
+#
+#   docker compose up -d                 # both services
+#   docker compose up -d radarpointd     # extrapolation only
+#
+# The first start of irene downloads the model (770 MB) into a volume. A
+# forecast of the whole grid takes about a minute on a 12-core CPU; until it
+# is ready, radarpointd serves the extrapolation.
+services:
+  radarpointd:
+    build: .
+    command: ["--listen", ":8080", "--irene-url", "http://irene:8000"]
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  irene:
+    build: irene
+    volumes:
+      - irene-model:/model
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+
+volumes:
+  irene-model:

@@ -1,0 +1,6 @@
+.git
+radarpoint
+radarpointd
+*.tif
+!testdata/*.tif
+irene
