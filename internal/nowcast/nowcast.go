@@ -99,7 +99,8 @@ func compute(frames []Frame, proj geo.Projection, gt geo.GeoTransform, step time
 
 // Point is the forecast at one lead time. Value and Hail are NaN where the
 // rain would come from outside the radar coverage; Hail is also NaN when the
-// nowcast has no hail field.
+// nowcast has no hail field. Hail is moved without the lead-time smoothing
+// of the rain, which would wipe out its small cells (see HailFields).
 type Point struct {
 	Time  time.Time
 	Lead  time.Duration
@@ -128,7 +129,7 @@ func (n *Nowcast) Forecast(lat, lon float64) ([]Point, error) {
 		px, py := int(math.Floor(x)), int(math.Floor(y))
 		hail := math.NaN()
 		if n.Hail != nil {
-			hail = float64(n.valueAt(n.Hail, px, py, k))
+			hail = float64(n.Hail.At(px, py))
 		}
 		d := time.Duration(k) * n.Step
 		out = append(out, Point{Time: n.Base.Add(d), Lead: d, Value: float64(n.valueAt(n.Latest, px, py, k)), Hail: hail,
@@ -157,12 +158,28 @@ func (n *Nowcast) Velocity(lat, lon float64) (speedKmh, towardDeg float64, ok bo
 	return speedKmh, towardDeg, true
 }
 
-// ForecastFields moves src (the latest rain, or any field observed at Base
-// such as hail) along the motion and returns the whole grid at steps
-// 1…steps, with NaN where the values would come from outside the radar
-// coverage. It is meant for verification and maps; point queries should use
-// Forecast. Rows are spread over all CPUs.
+// ForecastFields moves src (the latest rain, or any field observed at Base)
+// along the motion, smoothed as the lead time grows, and returns the whole
+// grid at steps 1…steps, with NaN where the values would come from outside
+// the radar coverage. It is meant for verification and maps; point queries
+// should use Forecast. Rows are spread over all CPUs.
 func (n *Nowcast) ForecastFields(src *Field, steps int) []*Field {
+	return n.move(src, steps, true)
+}
+
+// HailFields moves the hail field like ForecastFields, but without the
+// lead-time smoothing: hail cells are a few kilometres wide, and blurring
+// them as much as the rain lowers every value under 30–50% within half an
+// hour. On 150 hail moments of summer 2026, moving it unsmoothed scored
+// better at every lead and scale. It returns nil without a hail field.
+func (n *Nowcast) HailFields(steps int) []*Field {
+	if n.Hail == nil {
+		return nil
+	}
+	return n.move(n.Hail, steps, false)
+}
+
+func (n *Nowcast) move(src *Field, steps int, smooth bool) []*Field {
 	w, h := src.W, src.H
 	out := make([]*Field, steps)
 	for k := range out {
@@ -173,7 +190,7 @@ func (n *Nowcast) ForecastFields(src *Field, steps int) []*Field {
 	srcs := make([]*Field, steps)
 	for k := range srcs {
 		srcs[k] = src
-		if s := n.sigma(k + 1); s > 0 {
+		if s := n.sigma(k + 1); s > 0 && smooth {
 			srcs[k] = blur(src, s)
 		}
 	}

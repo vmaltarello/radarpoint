@@ -303,3 +303,52 @@ func TestProbability(t *testing.T) {
 		t.Errorf("deep in the rain: %v, want 1", p[3].Probability)
 	}
 }
+
+func TestHailIsNotSmoothed(t *testing.T) {
+	const w, h = 160, 160
+	fr := frames(randomBlobs(25, w, h), w, h, 3, 2, 1)
+	o := DefaultOptions
+	o.SmoothPerStep = 0.8
+	n, err := Compute(fr, tm, gt, step, 6, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A hail cell of 2×2 pixels at 90% somewhere in the rain.
+	hail := &Field{W: w, H: h, V: make([]float32, w*h)}
+	for _, p := range [][2]int{{80, 80}, {81, 80}, {80, 81}, {81, 81}} {
+		hail.V[p[1]*w+p[0]] = 0.9
+	}
+	n = n.WithHail(hail)
+	rain := n.ForecastFields(hail, 6)
+	fields := n.HailFields(6)
+	maxOf := func(f *Field) float32 {
+		var m float32
+		for _, v := range f.V {
+			if v == v && v > m {
+				m = v
+			}
+		}
+		return m
+	}
+	if m := maxOf(fields[5]); m != 0.9 {
+		t.Errorf("hail at +30m peaks at %v, want 0.9 moved unchanged", m)
+	}
+	if m := maxOf(rain[5]); m >= 0.5 {
+		t.Errorf("smoothed copy peaks at %v; the test should show the smoothing", m)
+	}
+	// The point forecast agrees with the field.
+	for row := range h {
+		for col := range w {
+			if fields[5].At(col, row) != 0.9 {
+				continue
+			}
+			lat, lon := tm.Inverse(gt.Center(col, row))
+			pts, _ := n.Forecast(lat, lon)
+			if pts[6].Hail != float64(float32(0.9)) {
+				t.Errorf("point (%d,%d) at +30m: hail %v, want 0.9", col, row, pts[6].Hail)
+			}
+			return
+		}
+	}
+	t.Error("no pixel with the moved hail at +30m")
+}
