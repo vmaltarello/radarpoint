@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/irene"
 	"github.com/vmaltarello/radarpoint/internal/nowcast"
 	"github.com/vmaltarello/radarpoint/internal/raster"
 	"github.com/vmaltarello/radarpoint/internal/store"
@@ -113,4 +114,61 @@ func mustField(t *testing.T, g *raster.GeoTIFF, nd func(float64) bool) *nowcast.
 		t.Fatal(err)
 	}
 	return f
+}
+
+// constFields returns steps fields of the nowcast grid filled with v.
+func constFields(n *nowcast.Nowcast, steps int, v float32) []*nowcast.Field {
+	var out []*nowcast.Field
+	for range steps {
+		f := &nowcast.Field{W: n.Latest.W, H: n.Latest.H, V: make([]float32, len(n.Latest.V))}
+		for i := range f.V {
+			f.V[i] = v
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func TestNowcastIRENE(t *testing.T) {
+	s := nowcastServer(t)
+	n := s.Nowcast()
+	fc := &irene.Forecast{Base: n.Base, Step: n.Step, Members: 4,
+		Mean: constFields(n, 12, 9), Prob: constFields(n, 12, 0.75)}
+	s.Irene = func() *irene.Forecast { return fc }
+	const rain = "/v1/nowcast?lat=45.78886&lon=6.01149"
+
+	var b NowcastBody
+	get(t, s, rain, http.StatusOK, &b)
+	if b.Method != "irene" || b.Members != 4 {
+		t.Fatalf("method %q members %d, want irene 4", b.Method, b.Members)
+	}
+	if *b.Steps[0].Value != 2.02 { // lead 0 is still the observation
+		t.Errorf("lead 0 %v, want the observed 2.02", *b.Steps[0].Value)
+	}
+	if st := b.Steps[5]; *st.Value != 9 || *st.RainProbability != 75 {
+		t.Errorf("+25 min: %v mm/h, %v%%; want IRENE's 9 and 75", *st.Value, *st.RainProbability)
+	}
+
+	get(t, s, rain+"&method=extrapolation", http.StatusOK, &b)
+	if b.Method != "lagrangian-persistence" || *b.Steps[5].Value == 9 {
+		t.Errorf("forced extrapolation: %q %v", b.Method, *b.Steps[5].Value)
+	}
+
+	// IRENE still on the previous frame: fall back, or 503 if asked for.
+	old := *fc
+	old.Base = n.Base.Add(-n.Step)
+	s.Irene = func() *irene.Forecast { return &old }
+	get(t, s, rain, http.StatusOK, &b)
+	if b.Method != "lagrangian-persistence" {
+		t.Errorf("stale IRENE used: %q", b.Method)
+	}
+	var e struct{ Status int }
+	get(t, s, rain+"&method=irene", http.StatusServiceUnavailable, &e)
+
+	// No radar now at the point: no data, as with the extrapolation.
+	s.Irene = func() *irene.Forecast { return fc }
+	get(t, s, "/v1/nowcast?lat=46.02527&lon=4.75645", http.StatusOK, &b)
+	if b.Steps[3].Status != StatusNoData || b.Steps[3].Value != nil {
+		t.Errorf("uncovered point: %+v", b.Steps[3])
+	}
 }

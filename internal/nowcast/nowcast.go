@@ -231,3 +231,10 @@ func (n *Nowcast) valueAt(f *Field, x, y, k int) float32 {
 	}
 	return f.At(x, y)
 }
+
+// PixelOf returns the grid pixel at lat/lon, and false outside the grid.
+func (n *Nowcast) PixelOf(lat, lon float64) (col, row int, ok bool) {
+	mx, my := n.proj.Forward(lat, lon)
+	col, row = n.transform.Pixel(mx, my)
+	return col, row, col >= 0 && row >= 0 && col < n.Latest.W && row < n.Latest.H
+}

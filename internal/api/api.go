@@ -25,6 +25,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/irene"
 	"github.com/vmaltarello/radarpoint/internal/nowcast"
 	"github.com/vmaltarello/radarpoint/internal/raster"
 	"github.com/vmaltarello/radarpoint/internal/store"
@@ -48,6 +49,9 @@ type Server struct {
 	// Nowcast returns the latest rain forecast, or nil; if Nowcast itself is
 	// nil the /nowcast endpoint is not served.
 	Nowcast func() *nowcast.Nowcast
+	// Irene returns the latest IRENE forecast, or nil; if Irene itself is nil
+	// /nowcast always uses the extrapolation.
+	Irene   func() *irene.Forecast
 	Version string           // shown in the OpenAPI description
 	Now     func() time.Time // for tests; defaults to time.Now
 }

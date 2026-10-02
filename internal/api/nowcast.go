@@ -10,6 +10,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/irene"
 	"github.com/vmaltarello/radarpoint/internal/nowcast"
 	"github.com/vmaltarello/radarpoint/internal/raster"
 )
@@ -56,16 +57,23 @@ type NowcastBody struct {
 	Stale       bool          `json:"stale" doc:"The forecast starts from data older than it should be"`
 	Motion      *Motion       `json:"motion,omitempty" doc:"Absent when no rain could be tracked anywhere"`
 	Steps       []NowcastStep `json:"steps"`
-	Method      string        `json:"method"`
+	Method      string        `json:"method" enum:"lagrangian-persistence,irene" doc:"Method that produced the forecast steps"`
+	Members     int           `json:"members,omitempty" doc:"IRENE ensemble members, when method is irene"`
 	Note        string        `json:"note"`
 	Attribution string        `json:"attribution"`
+}
+
+// nowcastInput adds the choice of method to the point parameters.
+type nowcastInput struct {
+	PointParams
+	Method string `query:"method" enum:"auto,irene,extrapolation" default:"auto" doc:"auto uses IRENE when its forecast for the latest radar frame is ready, the extrapolation otherwise"`
 }
 
 type nowcastOutput struct {
 	Body NowcastBody
 }
 
-func (s *Server) nowcast(_ context.Context, in *PointParams) (*nowcastOutput, error) {
+func (s *Server) nowcast(_ context.Context, in *nowcastInput) (*nowcastOutput, error) {
 	if err := in.check(); err != nil {
 		return nil, err
 	}
@@ -92,6 +100,14 @@ func (s *Server) nowcast(_ context.Context, in *PointParams) (*nowcastOutput, er
 		return nil, err
 	}
 	out.Body.Status = StatusOK
+	fc, err := s.ireneFor(n, in.Method)
+	if err != nil {
+		return nil, err
+	}
+	if fc != nil {
+		out.Body.Method, out.Body.Members, out.Body.Note = "irene", fc.Members, ireneNote
+		applyIRENE(pts, fc, n, in.Lat, in.Lon)
+	}
 	if n.Motion.Measured > 0 {
 		if speed, toward, ok := n.Velocity(in.Lat, in.Lon); ok {
 			out.Body.Motion = &Motion{SpeedKmh: math.Round(speed), TowardDeg: math.Round(toward)}
@@ -121,4 +137,48 @@ func (s *Server) currentNowcast() *nowcast.Nowcast {
 		return nil
 	}
 	return s.Nowcast()
+}
+
+const ireneNote = "IRENE ensemble forecast (Fondazione Bruno Kessler): a neural network trained on " +
+	"the Radar-DPC composite that also learns how rain grows and decays; value is the ensemble mean, " +
+	"rain_probability the share of members with rain. Motion and hail come from the extrapolation."
+
+// ireneFor returns the IRENE forecast to use for n, or nil for the
+// extrapolation. IRENE is used only if its forecast starts from the same
+// radar frame as n; asking for it explicitly when it is not ready is an
+// error.
+func (s *Server) ireneFor(n *nowcast.Nowcast, method string) (*irene.Forecast, error) {
+	if method == "extrapolation" {
+		return nil, nil
+	}
+	var fc *irene.Forecast
+	if s.Irene != nil {
+		fc = s.Irene()
+	}
+	if fc != nil && (!fc.Base.Equal(n.Base) || len(fc.Mean) < n.Steps) {
+		fc = nil
+	}
+	if fc == nil && method == "irene" {
+		return nil, huma.Error503ServiceUnavailable("the IRENE forecast for the latest radar frame is not available")
+	}
+	return fc, nil
+}
+
+// applyIRENE replaces the forecast steps (not the observation at lead 0)
+// with IRENE's mean and probability at the point. Where the radar sees
+// nothing now, the steps stay without data, as with the extrapolation.
+func applyIRENE(pts []nowcast.Point, fc *irene.Forecast, n *nowcast.Nowcast, lat, lon float64) {
+	col, row, ok := n.PixelOf(lat, lon)
+	if !ok {
+		return
+	}
+	covered := n.Latest.At(col, row) == n.Latest.At(col, row) // not NaN
+	for k := 1; k < len(pts) && k <= len(fc.Mean); k++ {
+		if !covered {
+			pts[k].Value, pts[k].Probability = math.NaN(), math.NaN()
+			continue
+		}
+		pts[k].Value = float64(fc.Mean[k-1].At(col, row))
+		pts[k].Probability = float64(fc.Prob[k-1].At(col, row))
+	}
 }
