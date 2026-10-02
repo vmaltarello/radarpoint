@@ -57,7 +57,9 @@ func hailCases(a archive, from, to time.Time, n int) []time.Time {
 		}
 		return cand{t, min(fn[0], fb[0])}
 	})
-	slices.SortStableFunc(scored, func(a, b cand) int { return cmp.Compare(b.area, a.area) })
+	// Go's sort is deterministic: equal areas always come out in the same
+	// order, which keeps the cases of docs/verification.md reproducible.
+	slices.SortFunc(scored, func(a, b cand) int { return cmp.Compare(b.area, a.area) })
 	var picked []time.Time
 	perDay := map[string][]time.Time{}
 	for _, c := range scored {
