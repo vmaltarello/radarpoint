@@ -225,6 +225,11 @@ func (n *Nowcast) WithHail(hail *Field) *Nowcast {
 	return &c
 }
 
+// StepBack moves pixel position (x, y), in pixel units with (0.5, 0.5) at
+// the centre of the top-left pixel, one time step back along the motion:
+// where what is at (x, y) one step later comes from.
+func (n *Nowcast) StepBack(x, y float64) (float64, float64) { return n.stepBack(x, y) }
+
 // stepBack moves pixel position (x, y) one time step back along the motion,
 // using the motion at the midpoint so curved flows are followed.
 func (n *Nowcast) stepBack(x, y float64) (float64, float64) {
