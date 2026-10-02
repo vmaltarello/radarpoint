@@ -257,19 +257,41 @@ On CPU (12 cores), the whole grid takes about 50–85 s with 4 members
 (`--irene-members`, the default) and needs about 3 GB of memory; one member
 takes about 25 s, ten about 3.5 minutes.
 
-Scores on the same 20 cases as below (IRENE ensemble mean, 4 members; CSI):
+**Scores.** IRENE was trained on 2021–2025, so it is scored on data it has
+never seen. The archive has 5-minute frames from July 2020, which leaves
+July–December 2020: 120 cases, at most one per day, from the IT-DPC-SRI
+archive (40 summer storms, 30 heavy autumn rain, 20 December rain, 30 random
+moments with rain). CSI of the IRENE ensemble mean (4 members) and of the
+extrapolation:
 
 | Lead | ≥0.5 mm/h IRENE | extrapolation | ≥5 mm/h IRENE | extrapolation |
 |---|---|---|---|---|
-| +15 min | 0.709 | 0.665 | 0.449 | 0.440 |
-| +30 min | 0.591 | 0.538 | 0.287 | 0.291 |
-| +45 min | 0.513 | 0.451 | 0.201 | 0.211 |
-| +60 min | 0.439 | 0.391 | 0.137 | 0.151 |
+| +15 min | 0.747 | 0.695 | 0.511 | 0.469 |
+| +30 min | 0.663 | 0.597 | 0.388 | 0.347 |
+| +45 min | 0.595 | 0.525 | 0.310 | 0.270 |
+| +60 min | 0.547 | 0.478 | 0.247 | 0.214 |
 
-IRENE is 7–14% better for rain in general and about level for heavy rain.
-Its probability (share of members with rain) is calibrated and its Brier
-score is 6–14% lower than that of the extrapolation's neighbourhood
-probability. These cases are after IRENE's training period (2021–2025).
+- IRENE is better overall at every lead: 7–14% for rain in general, 9–15%
+  for heavy rain, and in every category and region. The only near ties are heavy rain at +60 min
+  on the random moments (0.104 vs 0.099) and over Sardinia (0.238 vs 0.241).
+- At points that are dry now, "will it rain within 60 minutes?": both catch
+  58% of the onsets, but IRENE raises a third fewer false alarms (20% of its
+  warnings against 29%) and is closer on the time (7.7 against 9.3 minutes
+  off, while the extrapolation is about 2 minutes late on average). The 42%
+  of onsets that both miss are likely new cells, which no radar nowcast sees
+  coming.
+- The share of members with rain is overconfident (with 2 of 4 members it
+  rains 43–49% of the time), so the client maps it to the observed frequency
+  per step (`internal/irene/calibrate.go`). Fitted on half of the cases, the
+  map lowers the Brier score on the other half by 2–4%. Even without it,
+  IRENE's Brier score is 10–14% below that of the extrapolation's probability.
+- On 25 of the summer storms, a single member alone was slightly worse than
+  the extrapolation for heavy rain: the mean is what makes the difference.
+
+On recent data, the 20 cases of September 2026 used below, IRENE is 7–14%
+better for rain in general and level for heavy rain (CSI at +30 min: 0.591
+against 0.538 at 0.5 mm/h, 0.287 against 0.291 at 5 mm/h); those cases had
+no summer storms.
 
 ### Verification
 
@@ -498,8 +520,8 @@ output that shows data.
    in memory.~~ Done: `radarpointd`.
 2. ~~`/v1/now` HTTP API.~~ Done.
 3. ~~Nowcast by motion extrapolation behind `/v1/nowcast`.~~ Done, with the
-   optional [IRENE](#irene) service. Next: verification on summer storms from
-   the 2010–2025 archive, blending with the ICON-2I model beyond one hour.
+   optional [IRENE](#irene) service, verified on summer storms from the
+   archive. Next: blending with the ICON-2I model beyond one hour.
 4. A web map: radar layers over a map, click a point to see its current value
    and the last 30 minutes, built on the HTTP API.
 5. ~~Container image for easy deployment.~~ Done: `Dockerfile` and
