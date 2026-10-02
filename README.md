@@ -61,6 +61,17 @@ go build -o radarpoint ./cmd/radarpoint
 go build -o radarpointd ./cmd/radarpointd
 ```
 
+### With Docker
+
+```
+docker compose up -d                 # radarpointd and the IRENE forecast service
+docker compose up -d radarpointd     # radarpointd alone, extrapolation only
+```
+
+`radarpointd` is a 19 MB image. The optional IRENE service is a CPU-only
+PyTorch image of about 1.6 GB; on first start it downloads the model
+(770 MB) into a volume. See [IRENE](#irene).
+
 ## Usage
 
 ```
@@ -223,6 +234,43 @@ answers `unavailable` until two SRI frames have been downloaded.
 form from nothing are not anticipated, and decaying ones seem to last. Skill
 drops with lead time; treat 30–60 minutes as indicative.
 
+### IRENE
+
+[IRENE](https://huggingface.co/it4lia/irene) is a neural network by
+Fondazione Bruno Kessler (BSD 2-Clause), trained on years of the same
+Radar-DPC composite. From the last 6 frames it produces an ensemble of
+forecasts for the next hour; unlike the extrapolation, it has learnt how rain
+cells grow, decay and split. `radarpointd` can use it through a separate
+service, [`irene/`](irene/README.md), so the Go binary stays free of Python:
+
+- after each new SRI frame, `radarpointd` sends the last 6 frames to the
+  service (`--irene-url`) and gets back, for each step, the ensemble mean and
+  the probability of rain;
+- `/v1/nowcast` uses IRENE as soon as its forecast for the latest frame is
+  ready (about a minute later), and the extrapolation otherwise: `method`
+  says which, and `?method=extrapolation|irene` forces one;
+- the motion and the hail probability still come from the extrapolation;
+- if the service is down or slow, nothing breaks: the extrapolation is
+  served.
+
+On CPU (12 cores), the whole grid takes about 50–85 s with 4 members
+(`--irene-members`, the default) and needs about 3 GB of memory; one member
+takes about 25 s, ten about 3.5 minutes.
+
+Scores on the same 20 cases as below (IRENE ensemble mean, 4 members; CSI):
+
+| Lead | ≥0.5 mm/h IRENE | extrapolation | ≥5 mm/h IRENE | extrapolation |
+|---|---|---|---|---|
+| +15 min | 0.709 | 0.665 | 0.449 | 0.440 |
+| +30 min | 0.591 | 0.538 | 0.287 | 0.291 |
+| +45 min | 0.513 | 0.451 | 0.201 | 0.211 |
+| +60 min | 0.439 | 0.391 | 0.137 | 0.151 |
+
+IRENE is 7–14% better for rain in general and about level for heavy rain.
+Its probability (share of members with rain) is calibrated and its Brier
+score is 6–14% lower than that of the extrapolation's neighbourhood
+probability. These cases are after IRENE's training period (2021–2025).
+
 ### Verification
 
 `go run ./cmd/nowcastverify` forecasts from frames one hour old and scores each
@@ -296,6 +344,7 @@ work.
 ```
 cmd/radarpoint/     the command-line tool
 cmd/radarpointd/    the HTTP service
+irene/              optional IRENE forecast service (Python, Docker)
 cmd/tiffdump/       inspect a GeoTIFF
 cmd/tiffcrop/       cut a band of rows out of a GeoTIFF
 cmd/nowcastverify/ score the nowcast against real observations
@@ -304,6 +353,7 @@ cmd/tempmask/      rebuild the TEMP no-data mask
 internal/dpc/       Radar-DPC API client and product catalogue (units, nodata)
 internal/ingest/    keeps the store up to date with the latest products
 internal/store/     frames held in memory
+internal/irene/     client and background runner for the IRENE service
 internal/nowcast/   motion estimation and rain extrapolation
 internal/api/       HTTP API, built with Huma
 internal/raster/    minimal TIFF/GeoTIFF reader
@@ -447,13 +497,13 @@ output that shows data.
 1. ~~A service that downloads each product once and keeps the last 30 minutes
    in memory.~~ Done: `radarpointd`.
 2. ~~`/v1/now` HTTP API.~~ Done.
-3. ~~Nowcast by motion extrapolation behind `/v1/nowcast`.~~ Done. Next: the
-   [IRENE](https://huggingface.co/it4lia/irene) model (BSD 2-Clause), which
-   also learns growth and decay, scored with `nowcastverify` against the
-   extrapolation.
+3. ~~Nowcast by motion extrapolation behind `/v1/nowcast`.~~ Done, with the
+   optional [IRENE](#irene) service. Next: verification on summer storms from
+   the 2010–2025 archive, blending with the ICON-2I model beyond one hour.
 4. A web map: radar layers over a map, click a point to see its current value
    and the last 30 minutes, built on the HTTP API.
-5. Container image for easy deployment.
+5. ~~Container image for easy deployment.~~ Done: `Dockerfile` and
+   `compose.yaml`. Next: published images and binaries for each release.
 6. Integrations: Home Assistant, Telegram bot, webhooks.
 
 Lightning data is not available from the Radar-DPC API and is out of scope.
