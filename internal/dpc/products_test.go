@@ -52,6 +52,16 @@ func TestDisplay(t *testing.T) {
 	if got := sri.Display(2.5); got != 2.5 {
 		t.Errorf("SRI 2.5 shown as %v", got)
 	}
+	etm, _ := Lookup("ETM")
+	if got := etm.Display(-9998); got != 0 || etm.IsNoData(-9998) || !etm.IsNoData(-9999) {
+		t.Errorf("ETM -9998 shown as %v, nodata %v; want 0, a measurement", got, etm.IsNoData(-9998))
+	}
+	if got := etm.Display(8300); got != 8300 || etm.Unit != "m" {
+		t.Errorf("ETM 8300 shown as %v %s", got, etm.Unit)
+	}
+	if vil, ok := Lookup("VIL"); !ok || !vil.IsNoData(-9999) || vil.Display(12.5) != 12.5 {
+		t.Error("VIL not in the catalog or wrongly decoded")
+	}
 }
 
 func TestTempZeroMask(t *testing.T) {

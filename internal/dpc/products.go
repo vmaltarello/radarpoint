@@ -20,6 +20,9 @@ type Info struct {
 	NoData     []float64 // sentinel values meaning "no data"
 	NoDataText string    // shown for nodata values
 	ZeroText   string    // shown for a value of exactly 0, if meaningful
+	// ZeroValues are stored codes that mean 0, e.g. ETM's -9998: radar
+	// coverage but no echo.
+	ZeroValues []float64
 	// ZeroIsNoData marks products where exactly 0 is a mask (e.g. outside
 	// Italy), not a measurement.
 	ZeroIsNoData bool
@@ -41,6 +44,14 @@ var catalog = map[string]Info{
 	// POH is stored as 0–1 in steps of 1/254; values under 0.30 are set to 0.
 	"POH": {Type: "POH", Description: "probability of hail", Unit: "%", Scale: 100,
 		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "hail unlikely, under 30%",
+		MaxDelay: 15 * time.Minute},
+	// VIL and ETM are stored directly; ETM marks coverage without echo with
+	// -9998 (see README).
+	"VIL": {Type: "VIL", Description: "vertically integrated liquid water", Unit: "kg/m²",
+		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no echo",
+		MaxDelay: 15 * time.Minute},
+	"ETM": {Type: "ETM", Description: "maximum echo top height", Unit: "m",
+		NoData: []float64{-9999}, NoDataText: radarNoData, ZeroText: "no echo", ZeroValues: []float64{-9998},
 		MaxDelay: 15 * time.Minute},
 	"TEMP": {Type: "TEMP", Description: "air temperature, interpolated from ground stations", Unit: "°C",
 		NoData: []float64{-99999}, ZeroIsNoData: true, ZeroMask: tempMask,
@@ -81,6 +92,9 @@ func (i Info) Stale(t time.Time, period time.Duration, now time.Time) bool {
 
 // Display converts a stored value to the unit shown to users.
 func (i Info) Display(v float64) float64 {
+	if slices.Contains(i.ZeroValues, v) {
+		return 0
+	}
 	if i.Scale == 0 {
 		return v
 	}
