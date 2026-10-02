@@ -10,6 +10,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/hailrisk"
 	"github.com/vmaltarello/radarpoint/internal/irene"
 	"github.com/vmaltarello/radarpoint/internal/nowcast"
 	"github.com/vmaltarello/radarpoint/internal/raster"
@@ -48,19 +49,22 @@ type NowcastStep struct {
 
 // NowcastBody is the response of /nowcast.
 type NowcastBody struct {
-	Lat         float64       `json:"lat"`
-	Lon         float64       `json:"lon"`
-	Product     string        `json:"product" example:"SRI"`
-	Unit        string        `json:"unit" example:"mm/h"`
-	Status      string        `json:"status" enum:"ok,outside,unavailable" doc:"unavailable until two radar frames have been downloaded"`
-	BaseTime    *time.Time    `json:"base_time,omitempty" doc:"Time of the latest observation the forecast starts from"`
-	Stale       bool          `json:"stale" doc:"The forecast starts from data older than it should be"`
-	Motion      *Motion       `json:"motion,omitempty" doc:"Absent when no rain could be tracked anywhere"`
-	Steps       []NowcastStep `json:"steps"`
-	Method      string        `json:"method" enum:"lagrangian-persistence,irene" doc:"Method that produced the forecast steps"`
-	Members     int           `json:"members,omitempty" doc:"IRENE ensemble members, when method is irene"`
-	Note        string        `json:"note"`
-	Attribution string        `json:"attribution"`
+	Lat      float64       `json:"lat"`
+	Lon      float64       `json:"lon"`
+	Product  string        `json:"product" example:"SRI"`
+	Unit     string        `json:"unit" example:"mm/h"`
+	Status   string        `json:"status" enum:"ok,outside,unavailable" doc:"unavailable until two radar frames have been downloaded"`
+	BaseTime *time.Time    `json:"base_time,omitempty" doc:"Time of the latest observation the forecast starts from"`
+	Stale    bool          `json:"stale" doc:"The forecast starts from data older than it should be"`
+	Motion   *Motion       `json:"motion,omitempty" doc:"Absent when no rain could be tracked anywhere"`
+	Steps    []NowcastStep `json:"steps"`
+	// HailRisk is the hail model's output for the point, separate from the
+	// per-step POH because it also reads storm growth.
+	HailRisk    *float64 `json:"hail_probability_30min" doc:"Probability in % that hail (POH ≥ 50%) reaches the point within 30 minutes, from POH, VIL and ETM and their growth; at least the current POH where hail is already detected. Null when unknown: VIL, ETM or POH not followed, or not yet available for this forecast"`
+	Method      string   `json:"method" enum:"lagrangian-persistence,irene" doc:"Method that produced the forecast steps"`
+	Members     int      `json:"members,omitempty" doc:"IRENE ensemble members, when method is irene"`
+	Note        string   `json:"note"`
+	Attribution string   `json:"attribution"`
 }
 
 // nowcastInput adds the choice of method to the point parameters.
@@ -129,7 +133,22 @@ func (s *Server) nowcast(_ context.Context, in *nowcastInput) (*nowcastOutput, e
 		}
 		out.Body.Steps = append(out.Body.Steps, st)
 	}
+	if r := s.currentHailRisk(); r != nil && r.Base.Equal(n.Base) {
+		if col, row, ok := n.PixelOf(in.Lat, in.Lon); ok {
+			if v := float64(r.Prob.At(col, row)); !math.IsNaN(v) {
+				pct := math.Round(v * 100)
+				out.Body.HailRisk = &pct
+			}
+		}
+	}
 	return out, nil
+}
+
+func (s *Server) currentHailRisk() *hailrisk.Risk {
+	if s.HailRisk == nil {
+		return nil
+	}
+	return s.HailRisk()
 }
 
 func (s *Server) currentNowcast() *nowcast.Nowcast {

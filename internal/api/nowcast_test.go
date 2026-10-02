@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/hailrisk"
 	"github.com/vmaltarello/radarpoint/internal/irene"
 	"github.com/vmaltarello/radarpoint/internal/nowcast"
 	"github.com/vmaltarello/radarpoint/internal/raster"
@@ -170,5 +171,32 @@ func TestNowcastIRENE(t *testing.T) {
 	get(t, s, "/v1/nowcast?lat=46.02527&lon=4.75645", http.StatusOK, &b)
 	if b.Steps[3].Status != StatusNoData || b.Steps[3].Value != nil {
 		t.Errorf("uncovered point: %+v", b.Steps[3])
+	}
+}
+
+func TestNowcastHailRisk(t *testing.T) {
+	s := nowcastServer(t)
+	n := s.Nowcast()
+	const point = "/v1/nowcast?lat=45.78886&lon=6.01149"
+	var b NowcastBody
+	get(t, s, point, http.StatusOK, &b)
+	if b.HailRisk != nil {
+		t.Fatalf("hail risk %v without a hail model", *b.HailRisk)
+	}
+
+	risk := &hailrisk.Risk{Base: n.Base, Prob: constFields(n, 1, 0.237)[0]}
+	s.HailRisk = func() *hailrisk.Risk { return risk }
+	b = NowcastBody{}
+	get(t, s, point, http.StatusOK, &b)
+	if b.HailRisk == nil || *b.HailRisk != 24 {
+		t.Fatalf("hail risk %v, want 24 (%%)", b.HailRisk)
+	}
+
+	// A risk computed for an older radar frame is not reported.
+	risk = &hailrisk.Risk{Base: n.Base.Add(-n.Step), Prob: risk.Prob}
+	b = NowcastBody{}
+	get(t, s, point, http.StatusOK, &b)
+	if b.HailRisk != nil {
+		t.Errorf("hail risk %v from an older frame", *b.HailRisk)
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/hailrisk"
 	"github.com/vmaltarello/radarpoint/internal/irene"
 	"github.com/vmaltarello/radarpoint/internal/nowcast"
 	"github.com/vmaltarello/radarpoint/internal/raster"
@@ -51,9 +52,12 @@ type Server struct {
 	Nowcast func() *nowcast.Nowcast
 	// Irene returns the latest IRENE forecast, or nil; if Irene itself is nil
 	// /nowcast always uses the extrapolation.
-	Irene   func() *irene.Forecast
-	Version string           // shown in the OpenAPI description
-	Now     func() time.Time // for tests; defaults to time.Now
+	Irene func() *irene.Forecast
+	// HailRisk returns the latest probability of hail within 30 minutes, or
+	// nil; it is reported only when it matches the current nowcast.
+	HailRisk func() *hailrisk.Risk
+	Version  string           // shown in the OpenAPI description
+	Now      func() time.Time // for tests; defaults to time.Now
 }
 
 // Handler returns the HTTP handler with all routes and the API docs.
