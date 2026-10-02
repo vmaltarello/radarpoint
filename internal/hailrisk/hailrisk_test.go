@@ -172,3 +172,27 @@ func TestTrackerComputesOncePerNowcast(t *testing.T) {
 		t.Error("same nowcast computed twice")
 	}
 }
+
+func TestSignalsAtMatchesTheField(t *testing.T) {
+	n := movingRain(t)
+	in := Inputs{
+		POH:    storm(constant(0), 60, 100, 0.9),
+		VIL:    storm(storm(constant(0), 60, 100, 30), 2, 3, 12),
+		ETM:    storm(constant(0), 60, 100, 11000),
+		VILOld: storm(constant(0), 56, 100, 5),
+		ETMOld: storm(constant(0), 56, 100, 6000),
+	}
+	f := NewSignalField(n, in)
+	same := func(a, b float32) bool { return a == b || (a != a && b != b) }
+	for _, p := range [][2]int{{60, 100}, {68, 100}, {64, 97}, {40, 100}, {0, 0}, {3, 2}, {w - 1, h - 1}} {
+		got, want := SignalsAt(n, in, p[0], p[1]), f.Pixel(p[1]*w+p[0])
+		for j := range NumSignals {
+			if !same(got.At[j], want.At[j]) || !same(got.Near[j], want.Near[j]) {
+				t.Errorf("pixel %v signal %d: at %v/%v, near %v/%v", p, j, got.At[j], want.At[j], got.Near[j], want.Near[j])
+			}
+		}
+		if got.Prob() != want.Prob() {
+			t.Errorf("pixel %v: probability %v, field %v", p, got.Prob(), want.Prob())
+		}
+	}
+}

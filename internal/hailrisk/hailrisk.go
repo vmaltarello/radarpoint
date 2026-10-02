@@ -69,17 +69,50 @@ type Risk struct {
 	Prob *nowcast.Field
 }
 
-// Compute returns the probability of hail at every pixel within the next
-// 30 minutes. Where POH already shows hail, the value is at least the
-// current POH. Pixels without POH data are NaN.
-func Compute(n *nowcast.Nowcast, in Inputs) *nowcast.Field {
-	w, h := in.POH.W, in.POH.H
-	// Maximum along the trajectory of each pixel over the next Steps steps
-	// of POH, VIL, VIL growth, ETM and ETM growth.
-	var along [5][]float32
-	for j := range along {
-		along[j] = make([]float32, w*h)
+// The signals, each the maximum over the next Steps steps along the
+// motion: POH, VIL, VIL growth, ETM and ETM growth.
+const (
+	SigPOH = iota
+	SigVIL
+	SigVILGrowth
+	SigETM
+	SigETMGrowth
+	NumSignals
+)
+
+// Signals are the model inputs at one pixel: each signal's maximum along the
+// pixel's trajectory (At), the same maximum anywhere within Radius (Near),
+// and VIL and POH now at the pixel. NaN means no data.
+type Signals struct {
+	At, Near       [NumSignals]float32
+	VILNow, POHNow float32
+}
+
+// Prob returns the probability of hail within 30 minutes: the calibrated
+// model, and at least the current POH where it already shows hail.
+func (s Signals) Prob() float64 {
+	a := func(j int) float64 { return nz(s.At[j]) }
+	b := func(j int) float64 { return nz(s.Near[j]) }
+	x := [len(beta)]float64{1, a(SigPOH), b(SigPOH),
+		min(a(SigVIL), 40) / 10, min(b(SigVIL), 40) / 10,
+		clip(a(SigVILGrowth), -20, 20) / 10, clip(b(SigVILGrowth), -20, 40) / 10,
+		a(SigETM) / 10000, b(SigETM) / 10000,
+		clip(a(SigETMGrowth), -5000, 8000) / 5000, clip(b(SigETMGrowth), -5000, 10000) / 5000,
+		min(nz(s.VILNow), 40) / 10, nz(s.POHNow)}
+	z := 0.0
+	for j, c := range beta {
+		z += c * x[j]
 	}
+	p := calibrate(1 / (1 + math.Exp(-clip(z, -30, 30))))
+	if poh := nz(s.POHNow); poh >= Hail {
+		p = max(p, poh)
+	}
+	return p
+}
+
+// along follows the trajectory of pixel (c, r) back over Steps steps and
+// returns the maximum of each signal met on the way.
+func along(n *nowcast.Nowcast, in Inputs, c, r int) [NumSignals]float32 {
 	growth := func(now, old *nowcast.Field, c, r int) float32 {
 		x, y := float64(c)+0.5, float64(r)+0.5
 		for range GrowthSteps {
@@ -87,59 +120,96 @@ func Compute(n *nowcast.Nowcast, in Inputs) *nowcast.Field {
 		}
 		return now.At(c, r) - old.At(int(math.Floor(x)), int(math.Floor(y)))
 	}
+	mx := [NumSignals]float32{nan, nan, nan, nan, nan}
+	x, y := float64(c)+0.5, float64(r)+0.5
+	for range Steps {
+		x, y = n.StepBack(x, y)
+		qc, qr := int(math.Floor(x)), int(math.Floor(y))
+		up(&mx[SigPOH], in.POH.At(qc, qr))
+		up(&mx[SigVIL], in.VIL.At(qc, qr))
+		up(&mx[SigVILGrowth], growth(in.VIL, in.VILOld, qc, qr))
+		up(&mx[SigETM], in.ETM.At(qc, qr))
+		up(&mx[SigETMGrowth], growth(in.ETM, in.ETMOld, qc, qr))
+	}
+	return mx
+}
+
+// SignalField holds the signals of every pixel of the grid.
+type SignalField struct {
+	W, H     int
+	At, Near [NumSignals][]float32
+	in       Inputs
+}
+
+// NewSignalField computes the signals of every pixel, spread over all CPUs.
+func NewSignalField(n *nowcast.Nowcast, in Inputs) *SignalField {
+	w, h := in.POH.W, in.POH.H
+	f := &SignalField{W: w, H: h, in: in}
+	for j := range f.At {
+		f.At[j] = make([]float32, w*h)
+	}
 	rows(h, func(r int) {
 		for c := range w {
-			mx := [5]float32{nan, nan, nan, nan, nan}
-			x, y := float64(c)+0.5, float64(r)+0.5
-			for range Steps {
-				x, y = n.StepBack(x, y)
-				qc, qr := int(math.Floor(x)), int(math.Floor(y))
-				up(&mx[0], in.POH.At(qc, qr))
-				up(&mx[1], in.VIL.At(qc, qr))
-				up(&mx[2], growth(in.VIL, in.VILOld, qc, qr))
-				up(&mx[3], in.ETM.At(qc, qr))
-				up(&mx[4], growth(in.ETM, in.ETMOld, qc, qr))
-			}
+			mx := along(n, in, c, r)
 			for j := range mx {
-				along[j][r*w+c] = mx[j]
+				f.At[j][r*w+c] = mx[j]
 			}
 		}
 	})
-	var near [5][]float32
-	for j := range near {
-		near[j] = maxFilter(along[j], w, h, Radius)
+	for j := range f.Near {
+		f.Near[j] = maxFilter(f.At[j], w, h, Radius)
 	}
-	out := &nowcast.Field{W: w, H: h, V: make([]float32, w*h)}
-	rows(h, func(r int) {
-		for c := range w {
-			i := r*w + c
-			poh := in.POH.V[i]
-			if poh != poh {
+	return f
+}
+
+// Pixel returns the signals of pixel i (row-major).
+func (f *SignalField) Pixel(i int) Signals {
+	s := Signals{VILNow: f.in.VIL.V[i], POHNow: f.in.POH.V[i]}
+	for j := range s.At {
+		s.At[j], s.Near[j] = f.At[j][i], f.Near[j][i]
+	}
+	return s
+}
+
+// SignalsAt computes the signals of pixel (c, r) alone, following only the
+// trajectories within Radius of it: much faster than NewSignalField when
+// few pixels are needed, with the same result.
+func SignalsAt(n *nowcast.Nowcast, in Inputs, c, r int) Signals {
+	w, h := in.POH.W, in.POH.H
+	s := Signals{VILNow: in.VIL.At(c, r), POHNow: in.POH.At(c, r)}
+	for j := range s.Near {
+		s.At[j], s.Near[j] = nan, nan
+	}
+	for qr := max(r-Radius, 0); qr <= min(r+Radius, h-1); qr++ {
+		for qc := max(c-Radius, 0); qc <= min(c+Radius, w-1); qc++ {
+			mx := along(n, in, qc, qr)
+			for j := range mx {
+				up(&s.Near[j], mx[j])
+			}
+			if qc == c && qr == r {
+				s.At = mx
+			}
+		}
+	}
+	return s
+}
+
+// Compute returns the probability of hail at every pixel within the next
+// 30 minutes (see Signals.Prob). Pixels without POH data are NaN.
+func Compute(n *nowcast.Nowcast, in Inputs) *nowcast.Field {
+	f := NewSignalField(n, in)
+	out := &nowcast.Field{W: f.W, H: f.H, V: make([]float32, f.W*f.H)}
+	rows(f.H, func(r int) {
+		for c := range f.W {
+			i := r*f.W + c
+			if p := in.POH.V[i]; p != p {
 				out.V[i] = nan
 				continue
 			}
-			x := features(along, near, i, nz(in.VIL.V[i]), float64(poh))
-			z := 0.0
-			for j, b := range beta {
-				z += b * x[j]
-			}
-			p := calibrate(1 / (1 + math.Exp(-max(-30, min(30, z)))))
-			out.V[i] = float32(max(p, float64(poh)*boolf(poh >= Hail)))
+			out.V[i] = float32(f.Pixel(i).Prob())
 		}
 	})
 	return out
-}
-
-// features are the model inputs at pixel i, scaled as when it was fitted.
-func features(along, near [5][]float32, i int, vilNow, pohNow float64) [len(beta)]float64 {
-	a := func(j int) float64 { return nz(along[j][i]) }
-	b := func(j int) float64 { return nz(near[j][i]) }
-	return [len(beta)]float64{1, a(0), b(0),
-		min(a(1), 40) / 10, min(b(1), 40) / 10,
-		clip(a(2), -20, 20) / 10, clip(b(2), -20, 40) / 10,
-		a(3) / 10000, b(3) / 10000,
-		clip(a(4), -5000, 8000) / 5000, clip(b(4), -5000, 10000) / 5000,
-		min(vilNow, 40) / 10, pohNow}
 }
 
 // calibrate corrects the top of the model's range, which is overconfident:
@@ -169,13 +239,6 @@ func nz(v float32) float64 {
 }
 
 func clip(v, lo, hi float64) float64 { return max(lo, min(hi, v)) }
-
-func boolf(b bool) float64 {
-	if b {
-		return 1
-	}
-	return 0
-}
 
 // maxFilter returns the maximum over a square of side 2r+1 around each
 // pixel, ignoring NaN, in two separable passes.
