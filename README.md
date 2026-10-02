@@ -106,7 +106,7 @@ Special values are reported explicitly:
 ## HTTP service
 
 ```
-radarpointd --listen :8080 --products SRI,POH,TEMP --window 30m
+radarpointd --listen :8080 --products SRI,POH,TEMP,VIL,ETM --window 30m
 ```
 
 | Endpoint | Returns |
@@ -218,6 +218,40 @@ catches 34% of the cases, about 12 minutes ahead, and 57% of its warnings see
 no hail there; a forecast anywhere within 5 km catches 72%, about 15 minutes
 ahead, with 82% of warnings seeing no hail at the point itself. These are
 radar-to-radar scores per pixel, not checked against hail on the ground.
+
+**Probability of hail within 30 minutes.** With SRI, POH, VIL and ETM
+followed (the default), `/v1/nowcast` also gives `hail_probability_30min`:
+the probability that hail (POH ≥ 50%) reaches the point within half an hour.
+Besides the moved POH, at the point and within 5 km, it reads storm
+strength and growth: VIL (vertically integrated liquid water) and ETM
+(maximum echo top height), moved the same way, and how much both grew over
+the last 10 minutes. A logistic model
+([`internal/hailrisk`](internal/hailrisk/hailrisk.go)) combines them. It was
+fitted on the even days of the 150 hail moments above and is calibrated on
+the odd ones (a forecast of 10–20% verified at 17%, 30–50% at 38%; above 50%
+it was overconfident, so the top of the range is scaled down to at most
+70%). Where POH already shows hail, the value is at least the current POH.
+The whole grid takes about half a second.
+
+As a service would use it: 2,809 points every 10 km over Italy, one warning
+at most per hour each, from 12 May to 30 September 2026 (3.4 hail episodes
+per point, by POH). A warning is right if hail follows within 30 minutes;
+an episode is warned if a warning came before it started.
+
+| Warning when | Warnings per point | Without hail at the point | Episodes warned | Median lead |
+|---|---|---|---|---|
+| POH ≥ 50% within 5 km now | 14.0 | 80% | 78% | 10 min |
+| Moved POH ≥ 50% within 5 km | 18.2 | 86% | 70% | 20 min |
+| Moved POH ≥ 50% at the point | 5.2 | 60% | 57% | 15 min |
+| `hail_probability_30min` ≥ 10% | 10.8 | 77% | 70% | 20 min |
+| `hail_probability_30min` ≥ 20% | 6.6 | 65% | 64% | 15 min |
+| `hail_probability_30min` ≥ 30% | 4.6 | 57% | 55% | 15 min |
+
+At 10% the model warns as many episodes as the moved POH within 5 km, as
+early, with 40% fewer warnings. On the 107 days not used to fit it the
+figures are the same. Depending on the rule, a fifth to a half of the
+episodes get no warning before they start; these are likely new cells,
+which no radar nowcast sees coming.
 
 ```
 $ curl 'localhost:8080/v1/nowcast?lat=45.5966&lon=8.915'
@@ -470,6 +504,12 @@ the samples match and the best alignment is with no shift.
   18 and 25 September 2026: the maximum is exactly 1, the smallest positive
   value is 0.30, and pixels with POH > 0 have 27–140 mm/h of rain on average.
   The tool and the API show it in % (0–100).
+- **VIL**: vertically integrated liquid water in kg/m², stored directly in
+  steps of 0.5 (up to about 35 in strong storms). `−9999` is outside radar
+  coverage, 0 is no echo. Same grid as SRI, ~390 kB.
+- **ETM**: maximum echo top height in metres, stored directly (up to about
+  11–12 km in strong storms). `−9999` is outside radar coverage, **`−9998` is
+  coverage without echo**, shown as 0. Same grid as SRI, ~550 kB.
 - **TEMP**: °C, no scale or offset. `−99999` marks a few missing pixels, and
   **exactly 0 marks sea and areas outside Italy** (about three quarters of the
   grid). To tell that 0 from a real 0 °C, `internal/dpc/tempmask.png` marks

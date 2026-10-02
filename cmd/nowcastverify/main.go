@@ -6,9 +6,9 @@
 // it is: a useful nowcast must beat it.
 //
 // By default it verifies the latest hour. With --cases it scans the last days
-// (Radar-DPC keeps about two weeks), picks the moments with the most rain and
-// adds up the scores of all of them. Downloaded files are cached on disk, so
-// later runs do not download them again.
+// (Radar-DPC keeps about four and a half months), picks the moments with the
+// most rain and adds up the scores of all of them. Downloaded files are
+// cached on disk, so later runs do not download them again.
 //
 //	go run ./cmd/nowcastverify
 //	go run ./cmd/nowcastverify --cases 20
