@@ -114,6 +114,7 @@ radarpointd --listen :8080 --products SRI,POH,TEMP,VIL,ETM --window 30m
 | `GET /v1/now?lat=&lon=` | latest value of every product at the point |
 | `GET /v1/history?lat=&lon=&product=SRI` | values of all frames held in memory, oldest first; `product` must be one of the products the service follows |
 | `GET /v1/nowcast?lat=&lon=` | rain and hail forecast for the next hour, in 5-minute steps (see [Nowcast](#nowcast)) |
+| `GET /v1/grids` | whole-grid values of every observed and forecast frame, for clients that draw their own maps (see [Whole-grid data](#whole-grid-data)) |
 | `GET /healthz` | frames held per product; `503` until every product has data |
 | `GET /docs` | interactive API documentation |
 | `GET /openapi.json` | OpenAPI 3.1 description |
@@ -165,6 +166,53 @@ How the service talks to Radar-DPC:
 
 So the load on Radar-DPC does not depend on the number of clients: a few small
 requests and one download per product every 5 minutes.
+
+### Whole-grid data
+
+`GET /v1/grids` lists every frame held in memory, from the oldest observation
+(−25 min) to the last forecast step (+60 min), with the URL of each layer:
+
+| Layer | Unit | Frames |
+|---|---|---|
+| `rain` | mm/h | all; forecast from IRENE when `method` is `irene` |
+| `rain_probability` | % | forecast steps |
+| `hail` | % (POH, 0 under 30%) | all, when POH is followed |
+| `hail_probability_30min` | % | latest observation, when SRI, POH, VIL and ETM are followed |
+
+Each layer of a frame is **one byte per pixel** on the radar grid (1200×1400,
+1 km), rows from north to south, sent gzip-compressed: about 10–100 kB per
+frame, 1–3 MB for the whole hour and a half on a rainy evening. Byte 255 is
+no data; bytes 0–254 decode with the `values` table of the layer. Rain is on a
+logarithmic scale from 0.1 to 300 mm/h, 3% per step; percentages are stored
+as they are. A browser can upload a frame as an 8-bit texture and colour it
+with a 256-entry lookup.
+
+The response also describes the grid: size, origin and pixel size in
+projection metres, the Transverse Mercator parameters (also as a PROJ string,
+for proj4js) and the lat/lon box. A data URL never changes content, so it is
+cached as immutable; a new observation brings new URLs for the forecast
+frames. URLs of frames that left the window answer `404`.
+
+```
+$ curl -s localhost:8080/v1/grids | jq '{base_time, method, grid: .grid.projection.proj4, frame: .frames[6]}'
+{
+  "base_time": "2026-10-05T22:00:00Z",
+  "method": "extrapolation",
+  "grid": "+proj=tmerc +lat_0=42 +lon_0=12.5 +k=1 +x_0=0 +y_0=0 +a=6378137 +rf=298.257223563 +units=m +no_defs",
+  "frame": {
+    "time": "2026-10-05T22:05:00Z", "kind": "forecast", "lead_minutes": 5,
+    "layers": {
+      "rain": "/v1/grids/rain/202610052205-202610052200-extrapolation",
+      "rain_probability": "/v1/grids/rain_probability/202610052205-202610052200-extrapolation",
+      "hail": "/v1/grids/hail/202610052205-202610052200"
+    }
+  }
+}
+```
+
+Encoding all frames takes about 2 seconds after each new observation. With
+the grids the service peaks at about 500 MB of memory; with
+`GOMEMLIMIT=350MiB` it stays around 350 MB.
 
 ## Nowcast
 
@@ -447,6 +495,7 @@ internal/store/     frames held in memory
 internal/irene/     client and background runner for the IRENE service
 internal/hailrisk/  probability of hail within 30 minutes
 internal/nowcast/   motion estimation and rain extrapolation
+internal/grids/     whole-grid frames encoded for map clients
 internal/api/       HTTP API, built with Huma
 internal/raster/    minimal TIFF/GeoTIFF reader
 internal/geo/       Transverse Mercator projection and pixel transform
@@ -599,7 +648,8 @@ output that shows data.
    optional [IRENE](#irene) service, verified on summer storms from the
    archive. Next: blending with the ICON-2I model beyond one hour.
 4. A web map: radar layers over a map, click a point to see its current value
-   and the last 30 minutes, built on the HTTP API.
+   and the last 30 minutes, built on the HTTP API. The data is there:
+   [`/v1/grids`](#whole-grid-data).
 5. ~~Container image for easy deployment.~~ Done: `Dockerfile` and
    `compose.yaml`. Next: published images and binaries for each release.
 6. Integrations: Home Assistant, Telegram bot, webhooks.
