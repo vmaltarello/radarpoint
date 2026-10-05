@@ -174,7 +174,7 @@ func (s *Server) ireneFor(n *nowcast.Nowcast, method string) (*irene.Forecast, e
 	if s.Irene != nil {
 		fc = s.Irene()
 	}
-	if fc != nil && (!fc.Base.Equal(n.Base) || len(fc.Mean) < n.Steps) {
+	if !fc.Matches(n) {
 		fc = nil
 	}
 	if fc == nil && method == "irene" {

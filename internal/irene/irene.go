@@ -51,6 +51,14 @@ type Forecast struct {
 	Took    time.Duration    // time spent by the service
 }
 
+// Matches reports whether fc is a forecast from the same radar frame as n,
+// on the same grid and with at least as many steps, so it can stand in for
+// n's extrapolation.
+func (fc *Forecast) Matches(n *nowcast.Nowcast) bool {
+	return fc != nil && n != nil && fc.Base.Equal(n.Base) && len(fc.Mean) >= n.Steps &&
+		len(fc.Mean) > 0 && fc.Mean[0].W == n.Latest.W && fc.Mean[0].H == n.Latest.H
+}
+
 // Forecast sends the past frames (oldest first, all on the same grid) and
 // returns the forecast for the given number of steps.
 func (c *Client) Forecast(ctx context.Context, past []*nowcast.Field, base time.Time, step time.Duration, steps int) (*Forecast, error) {
