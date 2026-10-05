@@ -3,6 +3,7 @@
 //	GET /v1/now?lat=45.5966&lon=8.915       latest value of every product
 //	GET /v1/history?lat=…&lon=…&product=SRI all stored frames of one product
 //	GET /v1/nowcast?lat=…&lon=…             rain and hail forecast, next hour
+//	GET /v1/grids                           whole-grid frames for map clients
 //	GET /healthz                            frames held per product
 //	GET /docs, /openapi.json                interactive docs and OpenAPI schema
 //
@@ -25,6 +26,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/grids"
 	"github.com/vmaltarello/radarpoint/internal/hailrisk"
 	"github.com/vmaltarello/radarpoint/internal/irene"
 	"github.com/vmaltarello/radarpoint/internal/nowcast"
@@ -56,8 +58,11 @@ type Server struct {
 	// HailRisk returns the latest probability of hail within 30 minutes, or
 	// nil; it is reported only when it matches the current nowcast.
 	HailRisk func() *hailrisk.Risk
-	Version  string           // shown in the OpenAPI description
-	Now      func() time.Time // for tests; defaults to time.Now
+	// Grids returns the latest whole-grid frames, or nil; if Grids itself
+	// is nil the /grids endpoints are not served.
+	Grids   func() *grids.Set
+	Version string           // shown in the OpenAPI description
+	Now     func() time.Time // for tests; defaults to time.Now
 }
 
 // Handler returns the HTTP handler with all routes and the API docs.
@@ -84,6 +89,9 @@ func (s *Server) Handler() http.Handler {
 	productEnum(api, Prefix+"/history", s.Products)
 	if s.Nowcast != nil {
 		s.registerNowcast(api)
+	}
+	if s.Grids != nil {
+		s.registerGrids(api)
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "health",
