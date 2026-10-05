@@ -21,6 +21,7 @@ import (
 
 	"github.com/vmaltarello/radarpoint/internal/api"
 	"github.com/vmaltarello/radarpoint/internal/dpc"
+	"github.com/vmaltarello/radarpoint/internal/grids"
 	"github.com/vmaltarello/radarpoint/internal/hailrisk"
 	"github.com/vmaltarello/radarpoint/internal/ingest"
 	"github.com/vmaltarello/radarpoint/internal/irene"
@@ -70,9 +71,42 @@ func main() {
 	poh, _ := dpc.Lookup("POH")
 	engine := &nowcast.Engine{Steps: 12, Options: nowcast.DefaultOptions,
 		IsNoData: sri.IsNoData, HailIsNoData: poh.IsNoData}
+	// The whole-grid frames for map clients are rebuilt whenever one of
+	// their inputs changes: the nowcast, its hail, IRENE's forecast or the
+	// hail probability.
+	var runner *irene.Runner
+	hail := &hailrisk.Tracker{}
+	builder := &grids.Builder{}
+	observedHail := func(at time.Time) *nowcast.Field {
+		for _, f := range st.Frames("POH") {
+			if f.Time.Equal(at) {
+				fld, err := nowcast.NewField(f.Grid, poh.IsNoData)
+				if err != nil {
+					log.Warn("hail frame not usable", "err", err)
+					return nil
+				}
+				return fld
+			}
+		}
+		return nil
+	}
+	var gridsMu sync.Mutex // inputs are read and encoded in order
+	updateGrids := func() {
+		gridsMu.Lock()
+		defer gridsMu.Unlock()
+		start := time.Now()
+		in := grids.Inputs{Nowcast: engine.Current(), Risk: hail.Current(), ObservedHail: observedHail}
+		if runner != nil {
+			in.Irene = runner.Current()
+		}
+		if builder.Update(in) {
+			set := builder.Current()
+			log.Info("grids encoded", "frames", len(set.Frames), "method", set.Method, "took", time.Since(start).Round(time.Millisecond))
+		}
+	}
+
 	// IRENE, if configured, runs in the background after each new nowcast;
 	// until its forecast is ready the extrapolation is served.
-	var runner *irene.Runner
 	if *ireneURL != "" {
 		client := irene.NewClient(*ireneURL)
 		client.Members = *ireneMembers
@@ -82,6 +116,7 @@ func main() {
 				return
 			}
 			log.Info("IRENE forecast ready", "base", fc.Base, "members", fc.Members, "took", fc.Took.Round(time.Second))
+			updateGrids()
 		}}
 	}
 
@@ -102,7 +137,6 @@ func main() {
 	// The probability of hail within 30 minutes needs the nowcast and POH,
 	// VIL and ETM for its base time; it is recomputed whenever one of them
 	// arrives, once all are there.
-	hail := &hailrisk.Tracker{}
 	hailInputs := []string{"SRI", "POH", "VIL", "ETM"}
 	followsHail := !slices.ContainsFunc(hailInputs, func(p string) bool { return !slices.Contains(types, p) })
 	frameAt := func(product string, at time.Time) *raster.GeoTIFF {
@@ -136,6 +170,7 @@ func main() {
 			poller.OnUpdate = func() {
 				updateNowcast()
 				updateHail()
+				updateGrids()
 			}
 		case "POH":
 			poller.OnUpdate = func() {
@@ -143,16 +178,20 @@ func main() {
 					log.Warn("hail frame not usable", "err", err)
 				}
 				updateHail()
+				updateGrids()
 			}
 		case "VIL", "ETM":
-			poller.OnUpdate = updateHail
+			poller.OnUpdate = func() {
+				updateHail()
+				updateGrids()
+			}
 		}
 		wg.Go(func() { poller.Run(ctx) })
 	}
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           apiServer(st, types, engine, runner, followsHail, hail).Handler(),
+		Handler:           apiServer(st, types, engine, runner, followsHail, hail, builder).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,
 	}
@@ -174,9 +213,9 @@ func main() {
 	log.Info("stopped")
 }
 
-// apiServer serves /nowcast only when SRI, the product it is based on, is
-// followed.
-func apiServer(st *store.Store, products []string, engine *nowcast.Engine, runner *irene.Runner, followsHail bool, hail *hailrisk.Tracker) *api.Server {
+// apiServer serves /nowcast and /grids only when SRI, the product they are
+// based on, is followed.
+func apiServer(st *store.Store, products []string, engine *nowcast.Engine, runner *irene.Runner, followsHail bool, hail *hailrisk.Tracker, builder *grids.Builder) *api.Server {
 	s := &api.Server{Store: st, Products: products}
 	if slices.Contains(products, "SRI") {
 		s.Nowcast = engine.Current
@@ -186,6 +225,7 @@ func apiServer(st *store.Store, products []string, engine *nowcast.Engine, runne
 		if followsHail {
 			s.HailRisk = hail.Current
 		}
+		s.Grids = builder.Current
 	}
 	return s
 }
