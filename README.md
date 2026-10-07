@@ -355,9 +355,9 @@ service, [`irene/`](irene/README.md), so the Go binary stays free of Python:
 - if the service is down or slow, nothing breaks: the extrapolation is
   served.
 
-On CPU (12 cores), the whole grid takes about 50–85 s with 4 members
-(`--irene-members`, the default) and needs about 3 GB of memory; one member
-takes about 25 s, ten about 3.5 minutes.
+On CPU, the whole grid takes about 40 s with 4 members (`--irene-members`,
+the default) on 12 cores and 75 s on 2 cores, and fits in 2 GB of memory;
+time grows with the number of members, memory does not.
 
 **Scores.** IRENE was trained on 2021–2025, so it is scored on data it has
 never seen. The archive has 5-minute frames from July 2020, which leaves

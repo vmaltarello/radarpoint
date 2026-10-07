@@ -40,6 +40,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("irene")
 
 
+def strip_training_state(path):
+    """Rewrite the checkpoint without the optimizer state, once.
+
+    Two thirds of the published checkpoint is Adam state, useful only for
+    training: without it the file drops from 770 to 257 MB and every later
+    start needs half the memory to load it.
+    """
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    if "optimizer_states" not in ckpt:
+        return
+    for key in ("optimizer_states", "lr_schedulers", "loops", "callbacks"):
+        ckpt.pop(key, None)
+    torch.save(ckpt, path + ".tmp")
+    os.replace(path + ".tmp", path)
+    log.info("removed the training state from %s", path)
+
+
 def load_model():
     """Load the checkpoint, downloading it on first start (770 MB)."""
     if not os.path.exists(MODEL_PATH):
@@ -50,6 +67,7 @@ def load_model():
                                local_dir=os.path.dirname(MODEL_PATH))
         if path != MODEL_PATH:
             os.replace(path, MODEL_PATH)
+    strip_training_state(MODEL_PATH)
     from convgru_ensemble import RadarLightningModel
 
     torch.set_num_threads(int(os.environ.get("IRENE_THREADS", os.cpu_count() or 1)))
@@ -114,10 +132,18 @@ class Handler(BaseHTTPRequestHandler):
 
         with LOCK:
             t = time.perf_counter()
-            ens = np.asarray(MODEL.predict(past, forecast_steps=steps, ensemble_size=members))[:, :, :h, :w]
+            # One member at a time, folded into running totals: the memory
+            # peak is that of a single member, whatever the ensemble size.
+            total = np.zeros((steps, h, w), np.float32)
+            wet = np.zeros((steps, h, w), np.uint8)
+            for _ in range(members):
+                m = np.asarray(MODEL.predict(past, forecast_steps=steps, ensemble_size=1))[0, :, :h, :w]
+                total += m
+                wet += m >= threshold
+                del m
             took = time.perf_counter() - t
-        mean = ens.mean(axis=0).astype("<f4")                                  # (steps, h, w)
-        prob = np.rint((ens >= threshold).mean(axis=0) * 100).astype(np.uint8)  # (steps, h, w)
+        mean = (total / members).astype("<f4")                           # (steps, h, w)
+        prob = np.rint(wet * (100 / members)).astype(np.uint8)            # (steps, h, w)
         out = b"".join(mean[k].tobytes() + prob[k].tobytes() for k in range(steps))
         log.info("forecast %dx%d, %d members, %d steps in %.1fs", h, w, members, steps, took)
         self.reply(200, out, "application/octet-stream",
